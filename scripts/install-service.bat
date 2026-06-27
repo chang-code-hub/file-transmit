@@ -138,8 +138,7 @@ if %errorlevel% neq 0 (
 "%NSSM_PATH%" set FileTransmitService DisplayName "File Transmission Service"
 "%NSSM_PATH%" set FileTransmitService Description "File Transmission Tool - Self-hosted file transfer service"
 "%NSSM_PATH%" set FileTransmitService Start SERVICE_AUTO
-"%NSSM_PATH%" set FileTransmitService AppStdout "%APP_DIR%\logs\service-out.log"
-"%NSSM_PATH%" set FileTransmitService AppStderr "%APP_DIR%\logs\service-err.log"
+:: Logs are written by the app to logs\app-YYYY-MM-DD.log (auto-rotated daily, 30-day retention).
 "%NSSM_PATH%" set FileTransmitService AppExit Default Restart
 
 echo.

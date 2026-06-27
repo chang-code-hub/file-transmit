@@ -8,6 +8,9 @@ const userIdMiddleware = require('./middleware/userId');
 const logger = require('./utils/logger');
 const { startCleanup } = require('./services/cleanup');
 
+// Clean old log files on startup (retain 30 days)
+logger.cleanupOldLogs();
+
 const app = express();
 
 // Hot restart: stored server reference for port switching without process restart
