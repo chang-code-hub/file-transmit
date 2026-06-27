@@ -1,10 +1,22 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
 import FileDetailModal from '../components/FileDetailModal';
 
 export default function DownloadPage() {
+  const location = useLocation();
   const [fileId, setFileId] = useState('');
   const [lookupId, setLookupId] = useState(null);
   const [error, setError] = useState('');
+
+  // Auto-fill fileId from URL query param (e.g. /#/down?f=XXXXXXXX)
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const idFromUrl = params.get('f');
+    if (idFromUrl && idFromUrl.trim().length === 8) {
+      setFileId(idFromUrl.trim());
+      setLookupId(idFromUrl.trim());
+    }
+  }, [location.search]);
 
   const handleSubmit = (e) => {
     e.preventDefault();

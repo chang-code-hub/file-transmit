@@ -33,7 +33,7 @@ export default function App() {
             </NavLink>
           )}
           {access.download && (
-            <NavLink to="/download" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            <NavLink to="/down" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
               下载文件
             </NavLink>
           )}
@@ -44,10 +44,10 @@ export default function App() {
         <main className="main-content">
           <Routes>
             <Route path="/" element={
-              access.upload ? <UploadPage /> : (access.download ? <Navigate to="/download" replace /> : <UploadPage />)
+              access.upload ? <UploadPage /> : (access.download ? <Navigate to="/down" replace /> : <UploadPage />)
             } />
             <Route path="/upload" element={<UploadPage />} />
-            <Route path="/download" element={<DownloadPage />} />
+            <Route path="/down" element={<DownloadPage />} />
             <Route path="/admin" element={<AdminPage />} />
           </Routes>
         </main>

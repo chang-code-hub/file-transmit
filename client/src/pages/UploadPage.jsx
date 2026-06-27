@@ -13,6 +13,7 @@ export default function UploadPage() {
   const [dragOver, setDragOver] = useState(false);
   const [selectedHistoryId, setSelectedHistoryId] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
 
   // Progress state
   const [fileProgress, setFileProgress] = useState([]);
@@ -59,6 +60,15 @@ export default function UploadPage() {
       await navigator.clipboard.writeText(result.fileId);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handleCopyLink = async () => {
+    if (result?.fileId) {
+      const link = `${window.location.origin}/#/down?f=${result.fileId}`;
+      await navigator.clipboard.writeText(link);
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2000);
     }
   };
 
@@ -333,6 +343,34 @@ export default function UploadPage() {
                 {copied ? '✅ 已复制' : '📋 一键复制 ID'}
               </button>
             </div>
+
+            {/* Download link */}
+            <div style={{ marginTop: 24 }}>
+              <div style={{ fontSize: 14, color: '#666', marginBottom: 8 }}>下载链接：</div>
+              <div
+                style={{
+                  fontSize: 15,
+                  color: '#1a73e8',
+                  background: '#f0f7ff',
+                  padding: '10px 20px',
+                  borderRadius: 8,
+                  display: 'inline-block',
+                  wordBreak: 'break-all',
+                  border: '1px solid #d0e3f7',
+                }}
+              >
+                {window.location.origin}/#/down?f={result.fileId}
+              </div>
+              <div style={{ marginTop: 8 }}>
+                <button
+                  className="btn btn-primary btn-small"
+                  onClick={handleCopyLink}
+                >
+                  {linkCopied ? '✅ 已复制' : '📋 复制下载链接'}
+                </button>
+              </div> 
+            </div>
+
             <div style={{ marginTop: 12, fontSize: 13, color: '#999' }}>
               {result.fileCount} 个文件 · {new Date(result.expiresAt).toLocaleString('zh-CN')} 过期
             </div>
