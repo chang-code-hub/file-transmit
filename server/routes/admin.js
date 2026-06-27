@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const adminAuth = require('../middleware/auth');
+const logger = require('../utils/logger');
 const { runCleanup } = require('../services/cleanup');
 const { getConfig, updateConfig } = require('../config');
 const { getStats } = require('../db');
@@ -9,11 +10,14 @@ const { getStats } = require('../db');
 router.post('/login', (req, res) => {
   const { password } = req.body;
   const configPassword = getConfig('adminPassword');
+  const clientIp = (req.ip || req.connection.remoteAddress || '').replace(/^::ffff:/, '');
 
   if (!password || password !== configPassword) {
+    logger.log(`[管理] 登录失败: 密码错误, IP=${clientIp}`);
     return res.status(401).json({ error: '管理员密码错误' });
   }
 
+  logger.log(`[管理] 登录成功, IP=${clientIp}`);
   res.json({ success: true, message: '登录成功' });
 });
 
@@ -53,20 +57,28 @@ router.put('/settings', adminAuth, (req, res) => {
   }
 
   const oldPort = getConfig('port');
+  const changedKeys = Object.keys(updates).filter(k => k !== 'adminPassword');
   const newConfig = updateConfig(updates);
   const response = { ...newConfig };
   delete response.adminPassword;
 
   const portChanged = updates.port !== undefined && updates.port !== oldPort;
 
+  if (changedKeys.length > 0) {
+    logger.log(`[管理] 设置已更新: ${changedKeys.join(', ')}`);
+  }
+  if (updates.adminPassword) {
+    logger.log('[管理] 管理员密码已更改');
+  }
+
   res.json({ success: true, settings: response, portChanged });
 
   // Hot restart if port changed (after response flushed)
   if (portChanged) {
     res.on('finish', () => {
-      console.log(`端口变更: ${oldPort} → ${updates.port}`);
+      logger.log(`[管理] 端口变更: ${oldPort} → ${updates.port}`);
       req.app.locals.restartServer(updates.port).catch(err => {
-        console.error('端口切换失败:', err.message);
+        logger.error('[管理] 端口切换失败:', err.message);
       });
     });
   }
@@ -86,9 +98,11 @@ router.get('/stats', adminAuth, (req, res) => {
 // Trigger manual cleanup
 router.post('/cleanup', adminAuth, (req, res) => {
   try {
+    logger.log('[管理] 手动触发清理任务');
     runCleanup();
     res.json({ success: true, message: '清理任务已执行' });
   } catch (err) {
+    logger.error('[管理] 清理任务执行失败:', err.message);
     res.status(500).json({ error: '清理任务执行失败: ' + err.message });
   }
 });

@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const logger = require('../utils/logger');
 const { getConfig } = require('../config');
 const {
   deleteExpiredFiles,
@@ -26,7 +27,7 @@ function removeEmptyDirs(dirPath) {
         const remaining = fs.readdirSync(subPath);
         if (remaining.length === 0) {
           fs.rmdirSync(subPath);
-          console.log(`[清理] 删除空目录: ${subPath}`);
+          logger.log(`[清理] 删除空目录: ${subPath}`);
         }
       } catch {}
     }
@@ -35,21 +36,21 @@ function removeEmptyDirs(dirPath) {
 
 function runCleanup() {
   try {
-    console.log('[清理] 开始执行清理任务...');
+    logger.log('[清理] 开始执行清理任务...');
     const now = Date.now();
 
     // 1. Delete expired DB records + their folders
     const expired = deleteExpiredFiles(now);
-    console.log(`[清理] 删除 ${expired.length} 条过期记录`);
+    logger.log(`[清理] 删除 ${expired.length} 条过期记录`);
 
     for (const file of expired) {
       try {
         if (fs.existsSync(file.folder_path)) {
           fs.rmSync(file.folder_path, { recursive: true });
-          console.log(`[清理] 删除过期文件夹: ${file.folder_path}`);
+          logger.log(`[清理] 删除过期文件夹: ${file.folder_path}`);
         }
       } catch (err) {
-        console.error(`[清理] 删除文件夹失败: ${file.folder_path}`, err.message);
+        logger.error(`[清理] 删除文件夹失败: ${file.folder_path}`, err.message);
       }
     }
 
@@ -67,11 +68,11 @@ function runCleanup() {
       if (!fs.existsSync(filePath)) {
         deleteFileRecordById(record.id);
         orphanRecords++;
-        console.log(`[清理] 删除孤立文件记录: ${filePath}`);
+        logger.log(`[清理] 删除孤立文件记录: ${filePath}`);
       }
     }
     if (orphanRecords > 0) {
-      console.log(`[清理] 删除 ${orphanRecords} 条孤立文件记录`);
+      logger.log(`[清理] 删除 ${orphanRecords} 条孤立文件记录`);
     }
 
     // 3. Check files table: if folder doesn't exist, delete DB record; if folder is empty, delete it
@@ -82,7 +83,7 @@ function runCleanup() {
       if (!folderExists) {
         deleteFileById(file.id);
         removedFiles++;
-        console.log(`[清理] 删除不存在文件夹的数据库记录: ${file.folder_path}`);
+        logger.log(`[清理] 删除不存在文件夹的数据库记录: ${file.folder_path}`);
         continue;
       }
 
@@ -92,20 +93,20 @@ function runCleanup() {
         if (contents.length === 0) {
           fs.rmdirSync(file.folder_path);
           removedEmptyDirs++;
-          console.log(`[清理] 删除空文件夹: ${file.folder_path}`);
+          logger.log(`[清理] 删除空文件夹: ${file.folder_path}`);
           // Also remove the DB record since the folder is gone
           deleteFileById(file.id);
           removedFiles++;
         }
       } catch (err) {
-        console.error(`[清理] 检查文件夹失败: ${file.folder_path}`, err.message);
+        logger.error(`[清理] 检查文件夹失败: ${file.folder_path}`, err.message);
       }
     }
     if (removedFiles > 0) {
-      console.log(`[清理] 删除 ${removedFiles} 条无效文件记录`);
+      logger.log(`[清理] 删除 ${removedFiles} 条无效文件记录`);
     }
     if (removedEmptyDirs > 0) {
-      console.log(`[清理] 删除 ${removedEmptyDirs} 个空文件夹`);
+      logger.log(`[清理] 删除 ${removedEmptyDirs} 个空文件夹`);
     }
 
     // 4. Remove empty directories in storage root
@@ -114,9 +115,9 @@ function runCleanup() {
       removeEmptyDirs(storagePath);
     }
 
-    console.log('[清理] 清理任务完成');
+    logger.log('[清理] 清理任务完成');
   } catch (err) {
-    console.error('[清理] 清理任务出错:', err.message);
+    logger.error('[清理] 清理任务出错:', err.message);
   }
 }
 
@@ -126,7 +127,7 @@ function startCleanup() {
 
   // Schedule periodic cleanup
   setInterval(runCleanup, CLEANUP_INTERVAL);
-  console.log(`[清理] 定时清理已启动，间隔 ${CLEANUP_INTERVAL / 60000} 分钟`);
+  logger.log(`[清理] 定时清理已启动，间隔 ${CLEANUP_INTERVAL / 60000} 分钟`);
 }
 
 module.exports = { startCleanup, runCleanup };

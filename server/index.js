@@ -5,6 +5,7 @@ const cors = require('cors');
 const { initDb } = require('./db');
 const { loadConfig, getConfig } = require('./config');
 const userIdMiddleware = require('./middleware/userId');
+const logger = require('./utils/logger');
 const { startCleanup } = require('./services/cleanup');
 
 const app = express();
@@ -15,12 +16,12 @@ app.locals.restartServer = function (newPort) {
   return new Promise((resolve, reject) => {
     function listen(port, res, rej) {
       const server = app.listen(port, () => {
-        console.log(`文件传输服务已启动: http://localhost:${port}`);
+        logger.log(`文件传输服务已启动: http://localhost:${port}`);
         app.locals.httpServer = server;
         if (res) res(server);
       });
       server.on('error', (err) => {
-        console.error(`端口 ${port} 启动失败:`, err.message);
+        logger.error(`端口 ${port} 启动失败:`, err.message);
         if (rej) rej(err);
       });
     }
@@ -29,10 +30,10 @@ app.locals.restartServer = function (newPort) {
     if (oldServer) {
       oldServer.close((err) => {
         if (err) {
-          console.error('关闭端口失败:', err);
+          logger.error('关闭端口失败:', err);
           return reject(err);
         }
-        console.log('原端口已关闭');
+        logger.log('原端口已关闭');
         listen(newPort, resolve, reject);
       });
     } else {
@@ -79,10 +80,10 @@ async function start() {
     startCleanup();
     const PORT = getConfig('port') || process.env.PORT || 3000;
     await app.locals.restartServer(PORT);
-    console.log(`存储路径: ${getConfig('storagePath')}`);
-    console.log(`文件保留时长: ${getConfig('retentionHours')} 小时`);
+    logger.log(`存储路径: ${getConfig('storagePath')}`);
+    logger.log(`文件保留时长: ${getConfig('retentionHours')} 小时`);
   } catch (err) {
-    console.error('启动失败:', err);
+    logger.error('启动失败:', err);
     process.exit(1);
   }
 }

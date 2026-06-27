@@ -1,6 +1,7 @@
 const { execFile } = require('child_process');
 const os = require('os');
 const fs = require('fs');
+const logger = require('../utils/logger');
 const path = require('path');
 
 /**
@@ -11,7 +12,7 @@ function scanFile(filePath) {
   return new Promise((resolve) => {
     // Only supported on Windows
     if (os.platform() !== 'win32') {
-      console.log('[杀毒] 非 Windows 系统，跳过病毒扫描');
+      logger.log('[杀毒] 非 Windows 系统，跳过病毒扫描');
       return resolve({ clean: true, skipped: true });
     }
 
@@ -30,11 +31,11 @@ function scanFile(filePath) {
     }
 
     if (!scannerPath) {
-      console.log('[杀毒] 未找到火绒杀毒软件，跳过扫描');
+      logger.log('[杀毒] 未找到火绒杀毒软件，跳过扫描');
       return resolve({ clean: true, skipped: true });
     }
 
-    console.log(`[杀毒] 开始扫描: ${filePath}`);
+    logger.log(`[杀毒] 开始扫描: ${filePath}`);
 
     // Huorong command-line scan: HipsMain.exe -s <path>
     execFile(scannerPath, ['-s', filePath], {
@@ -43,14 +44,14 @@ function scanFile(filePath) {
       if (error) {
         // Huorong exits with non-zero if threats found
         if (error.code === 1) {
-          console.log(`[杀毒] 发现威胁: ${filePath}`);
+          logger.log(`[杀毒] 发现威胁: ${filePath}`);
           return resolve({ clean: false, threat: stdout || stderr });
         }
-        console.error(`[杀毒] 扫描出错: ${error.message}`);
+        logger.error(`[杀毒] 扫描出错: ${error.message}`);
         return resolve({ clean: true, error: error.message });
       }
 
-      console.log(`[杀毒] 扫描完成，无威胁: ${filePath}`);
+      logger.log(`[杀毒] 扫描完成，无威胁: ${filePath}`);
       resolve({ clean: true });
     });
   });

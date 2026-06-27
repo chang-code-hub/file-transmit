@@ -8,6 +8,7 @@ const { v4: uuidv4 } = require('uuid');
 const { getConfig } = require('../config');
 const { createFile, addFileRecord, getFilesByUserId, validateFileIds } = require('../db');
 const ipFilter = require('../middleware/ipFilter');
+const logger = require('../utils/logger');
 const { scanFile } = require('../services/avScan');
 const { inspectArchives } = require('../services/archiveCheck');
 
@@ -74,14 +75,17 @@ const chunkUpload = multer({
 router.post('/init', (req, res) => {
   try {
     const { files, description } = req.body;
+    const clientIp = (req.ip || req.connection.remoteAddress || '').replace(/^::ffff:/, '');
 
     if (!files || !Array.isArray(files) || files.length === 0) {
+      logger.log(`[上传] 初始化请求无效: 未提供文件列表, IP=${clientIp}`);
       return res.status(400).json({ error: '请选择要上传的文件' });
     }
 
     // Validate extensions
     for (const f of files) {
       if (!isExtensionAllowed(f.name)) {
+        logger.log(`[上传] 初始化被拒绝: 不允许的文件类型 "${f.name}", IP=${clientIp}`);
         return res.status(400).json({ error: `不允许的文件类型: ${path.extname(f.name)}` });
       }
     }
@@ -115,11 +119,15 @@ router.post('/init', (req, res) => {
       'utf-8'
     );
 
+    const totalSize = files.reduce((sum, f) => sum + (f.size || 0), 0);
+    logger.log(`[上传] 初始化成功: ID=${fileId}, 文件数=${files.length}, 总大小=${(totalSize / 1024 / 1024).toFixed(1)}MB, IP=${clientIp}`);
+
     res.json({
       fileId,
       chunkSize: CHUNK_SIZE,
     });
   } catch (err) {
+    logger.error(`[上传] 初始化失败: ${err.message}`);
     res.status(500).json({ error: '初始化上传失败: ' + err.message });
   }
 });
@@ -132,22 +140,28 @@ router.post('/init', (req, res) => {
 router.post('/chunk', (req, res) => {
   chunkUpload.single('chunk')(req, res, (err) => {
     if (err) {
+      logger.error(`[上传] 接收分块失败: ${err.message}`);
       return res.status(500).json({ error: '接收分块失败: ' + err.message });
     }
 
     // fileId is only available after multer parses the multipart form-data
     const fileId = req.body.fileId;
-    if (!fileId) return res.status(400).json({ error: '缺少 fileId' });
+    if (!fileId) {
+      logger.log('[上传] 分块请求缺少 fileId');
+      return res.status(400).json({ error: '缺少 fileId' });
+    }
 
     const config = getConfig();
     const folderPath = path.join(config.storagePath, fileId);
     if (!fs.existsSync(folderPath)) {
+      logger.log(`[上传] 分块请求无效: 会话不存在 ID=${fileId}`);
       return res.status(404).json({ error: '上传会话不存在，请重新开始' });
     }
 
     try {
       const fileIndex = parseInt(req.body.fileIndex, 10);
       const chunkIndex = parseInt(req.body.chunkIndex, 10);
+      const totalChunks = parseInt(req.body.totalChunks, 10);
 
       // Update manifest to track received chunks
       const manifestPath = path.join(folderPath, '.chunks', 'manifest.json');
@@ -159,6 +173,15 @@ router.post('/chunk', (req, res) => {
           manifest.receivedChunks[fileIndex].push(chunkIndex);
         }
         fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
+
+        // Log first and last chunk per file
+        if (chunkIndex === 0) {
+          logger.log(`[上传] 开始接收文件: ID=${fileId}, 文件索引=${fileIndex}, 总分块=${totalChunks}`);
+        }
+        const received = manifest.receivedChunks[fileIndex].length;
+        if (received === totalChunks) {
+          logger.log(`[上传] 文件分块接收完毕: ID=${fileId}, 文件索引=${fileIndex}, 分块数=${totalChunks}`);
+        }
       }
 
       res.json({
@@ -167,6 +190,7 @@ router.post('/chunk', (req, res) => {
         received: true,
       });
     } catch (err) {
+      logger.error(`[上传] 处理分块失败: ID=${fileId}, ${err.message}`);
       res.status(500).json({ error: '处理分块失败: ' + err.message });
     }
   });
@@ -180,7 +204,10 @@ router.post('/chunk', (req, res) => {
 router.post('/complete', async (req, res) => {
   try {
     const { fileId } = req.body;
-    if (!fileId) return res.status(400).json({ error: '缺少 fileId' });
+    if (!fileId) {
+      logger.log('[上传] 完成请求缺少 fileId');
+      return res.status(400).json({ error: '缺少 fileId' });
+    }
 
     const config = getConfig();
     const folderPath = path.join(config.storagePath, fileId);
@@ -188,12 +215,14 @@ router.post('/complete', async (req, res) => {
     const manifestPath = path.join(chunksDir, 'manifest.json');
 
     if (!fs.existsSync(manifestPath)) {
+      logger.log(`[上传] 完成请求无效: 会话不存在 ID=${fileId}`);
       return res.status(404).json({ error: '上传会话不存在' });
     }
 
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
 
     if (manifest.status === 'completed') {
+      logger.log(`[上传] 完成请求重复: ID=${fileId}`);
       return res.status(400).json({ error: '上传已完成' });
     }
 
@@ -206,6 +235,7 @@ router.post('/complete', async (req, res) => {
       // Verify all chunks received
       const received = manifest.receivedChunks?.[fi] || [];
       if (received.length < totalChunks) {
+        logger.log(`[上传] 完成失败: ID=${fileId}, 文件 "${fileInfo.name}" 分块不完整 (${received.length}/${totalChunks})`);
         return res.status(400).json({
           error: `文件 "${fileInfo.name}" 分块不完整 (已收到 ${received.length}/${totalChunks})`,
         });
@@ -232,6 +262,7 @@ router.post('/complete', async (req, res) => {
         const chunkPath = path.join(chunksDir, `${fi}_${ci}`);
         if (!fs.existsSync(chunkPath)) {
           writeStream.close();
+          logger.log(`[上传] 完成失败: ID=${fileId}, 缺少分块 ${fi}_${ci}`);
           return res.status(400).json({ error: `缺少分块: ${fi}_${ci}` });
         }
         const chunkData = fs.readFileSync(chunkPath);
@@ -263,10 +294,11 @@ router.post('/complete', async (req, res) => {
         sevenZipPath: config.sevenZipPath,
       });
     } catch (err) {
-      console.error(`[归档检查] 检查异常: ${err.message}`);
+      logger.error(`[归档检查] 检查异常: ${err.message}`);
     }
 
     if (archiveReport && archiveReport.blocked) {
+      logger.log(`[上传] 被归档检查阻止: ID=${fileId}, 原因=${archiveReport.blockReasons.join('; ')}`);
       // 阻止上传：清理已组装的文件和目录
       try { fs.rmSync(folderPath, { recursive: true }); } catch {}
       return res.status(400).json({
@@ -320,6 +352,9 @@ router.post('/complete', async (req, res) => {
       if (fs.existsSync(cd)) fs.rmdirSync(cd);
     } catch {}
 
+    const totalSize = assembledFiles.reduce((sum, f) => sum + f.size, 0);
+    logger.log(`[上传] 完成: ID=${fileId}, 文件数=${assembledFiles.length}, 总大小=${(totalSize / 1024 / 1024).toFixed(1)}MB, IP=${ip}, 保留至=${new Date(expiresAt).toLocaleString()}`);
+
     res.json({
       success: true,
       fileId,
@@ -329,6 +364,7 @@ router.post('/complete', async (req, res) => {
       archiveResults: archiveReport ? archiveReport.files : [],
     });
   } catch (err) {
+    logger.error(`[上传] 完成失败: ${err.message}`);
     res.status(500).json({ error: '完成上传失败: ' + err.message });
   }
 });
