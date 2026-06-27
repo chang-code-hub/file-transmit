@@ -7,3 +7,4 @@ client/node_modules/
 *.db-wal
 .env
 test_archives/
+logs/

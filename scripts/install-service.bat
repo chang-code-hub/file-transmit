@@ -1,17 +1,16 @@
 @echo off
-chcp 65001 >nul
-title 安装文件传输服务
+title Install File Transmission Service
 
 echo ============================================
-echo   安装文件传输 Windows 服务
+echo   Install File Transmission Windows Service
 echo ============================================
 echo.
 
 :: Must run as Administrator
 net session >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [错误] 请以管理员身份运行此脚本！
-    echo 右键点击脚本，选择"以管理员身份运行"
+    echo [Error] Please run this script as Administrator!
+    echo Right-click the script and select "Run as administrator"
     pause
     exit /b 1
 )
@@ -21,61 +20,158 @@ cd /d "%~dp0\.."
 :: Check node
 where node >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [错误] 未找到 Node.js，请先安装 Node.js
+    echo [Error] Node.js not found. Please install Node.js first.
     pause
     exit /b 1
 )
 
-:: Get node path
-for /f "delims=" %%i in ('where node') do set NODE_PATH=%%i
+:: ============================================
+:: Find or download nssm (Non-Sucking Service Manager)
+:: ============================================
+set "NSSM_PATH="
 
-:: Get current directory
-set APP_DIR=%cd%
+:: 1. Check if nssm is in PATH
+where nssm >nul 2>&1
+if %errorlevel% equ 0 (
+    for /f "delims=" %%i in ('where nssm') do set "NSSM_PATH=%%i"
+    echo [Info] Found nssm in PATH: %NSSM_PATH%
+    goto :nssm_found
+)
 
-echo [信息] Node.js 路径: %NODE_PATH%
-echo [信息] 应用路径: %APP_DIR%
+:: 2. Check if bundled in scripts folder
+if exist "%~dp0nssm.exe" (
+    set "NSSM_PATH=%~dp0nssm.exe"
+    echo [Info] Found bundled nssm: %NSSM_PATH%
+    goto :nssm_found
+)
+
+:: 3. Check winget
+where winget >nul 2>&1
+if %errorlevel% equ 0 (
+    echo [Setup] Installing nssm via winget...
+    winget install --accept-source-agreements --accept-package-agreements NSSM.NSSM
+    where nssm >nul 2>&1
+    if %errorlevel% equ 0 (
+        for /f "delims=" %%i in ('where nssm') do set "NSSM_PATH=%%i"
+        echo [Info] nssm installed via winget: %NSSM_PATH%
+        goto :nssm_found
+    )
+)
+
+:: 4. Download nssm
+echo [Setup] Downloading nssm (Windows service wrapper)...
+powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://nssm.cc/release/nssm-2.24.zip' -OutFile '%TEMP%\nssm.zip'" 2>nul
+if exist "%TEMP%\nssm.zip" (
+    powershell -Command "Expand-Archive -Path '%TEMP%\nssm.zip' -DestinationPath '%TEMP%\nssm_extract' -Force" 2>nul
+    if exist "%TEMP%\nssm_extract\nssm-2.24\win64\nssm.exe" (
+        copy /Y "%TEMP%\nssm_extract\nssm-2.24\win64\nssm.exe" "%~dp0nssm.exe" >nul
+        set "NSSM_PATH=%~dp0nssm.exe"
+        echo [Info] nssm downloaded to scripts\nssm.exe
+        goto :nssm_found
+    )
+)
+
+echo [Error] Could not install nssm.
+echo Please install manually with one of these methods:
+echo   1. winget install NSSM.NSSM
+echo   2. Download from https://nssm.cc/download
+echo      Place nssm.exe in the scripts\ folder or add to PATH
+pause
+exit /b 1
+
+:nssm_found
+
+:: ============================================
+:: Get paths
+:: ============================================
+for /f "delims=" %%i in ('where node') do set "NODE_PATH=%%i"
+set "APP_DIR=%CD%"
+
+echo [Info] Node.js : %NODE_PATH%
+echo [Info] App dir : %APP_DIR%
 echo.
 
-:: Install dependencies if needed
+:: ============================================
+:: Prepare app
+:: ============================================
 if not exist "node_modules" (
-    echo [安装] 正在安装依赖...
+    echo [Setup] Installing dependencies...
     call npm install
+    echo.
 )
 
-:: Build frontend if needed
 if not exist "client\dist" (
-    echo [构建] 正在构建前端...
+    echo [Build] Building frontend...
     call npm run build
+    echo.
 )
 
-echo [安装] 正在创建 Windows 服务...
+:: Create logs directory
+if not exist "logs" mkdir "logs"
 
-:: Create the service using sc.exe
-:: binPath: node executable + server script
-set BIN_PATH="%NODE_PATH%" "%APP_DIR%\server\index.js"
+:: ============================================
+:: Remove old broken service if exists
+:: ============================================
+sc query FileTransmitService >nul 2>&1
+if %errorlevel% equ 0 (
+    echo [Cleanup] Removing old service entry - was using sc create, which cannot work...
+    sc stop FileTransmitService >nul 2>&1
+    timeout /t 2 /nobreak >nul
+    sc delete FileTransmitService >nul 2>&1
+    echo.
+)
 
-sc create FileTransmitService ^
-    binPath= "%BIN_PATH%" ^
-    DisplayName= "文件传输服务" ^
-    start= auto ^
-    obj= LocalSystem
+:: ============================================
+:: Install service via nssm
+:: ============================================
+echo [Setup] Installing service with nssm...
 
+"%NSSM_PATH%" install FileTransmitService "%NODE_PATH%" "%APP_DIR%\server\index.js"
+if %errorlevel% neq 0 (
+    echo [Error] Failed to install service.
+    pause
+    exit /b 1
+)
+
+:: Configure service
+"%NSSM_PATH%" set FileTransmitService AppDirectory "%APP_DIR%"
+"%NSSM_PATH%" set FileTransmitService DisplayName "File Transmission Service"
+"%NSSM_PATH%" set FileTransmitService Description "File Transmission Tool - Self-hosted file transfer service"
+"%NSSM_PATH%" set FileTransmitService Start SERVICE_AUTO
+"%NSSM_PATH%" set FileTransmitService AppStdout "%APP_DIR%\logs\service-out.log"
+"%NSSM_PATH%" set FileTransmitService AppStderr "%APP_DIR%\logs\service-err.log"
+"%NSSM_PATH%" set FileTransmitService AppExit Default Restart
+
+echo.
+echo [Start] Starting service...
+"%NSSM_PATH%" start FileTransmitService
+
+:: Wait a moment and check status
+timeout /t 3 /nobreak >nul
+"%NSSM_PATH%" status FileTransmitService 2>nul | findstr /i "RUNNING" >nul
 if %errorlevel% equ 0 (
     echo.
     echo ============================================
-    echo   服务安装成功！
+    echo   Service installed and RUNNING!
     echo ============================================
-    echo.
-    echo 启动服务: sc start FileTransmitService
-    echo 停止服务: sc stop FileTransmitService
-    echo 删除服务: sc delete FileTransmitService
-    echo.
-    echo 或使用 Windows 服务管理器 (services.msc) 管理
-    echo.
-    sc start FileTransmitService
 ) else (
-    echo [错误] 服务安装失败，请检查是否已安装
-    echo 如需重新安装，先运行: sc delete FileTransmitService
+    echo.
+    echo ============================================
+    echo   Service installed but may not be running.
+    echo   Check status: nssm status FileTransmitService
+    echo   Check logs:   logs\service-err.log
+    echo ============================================
 )
+
+echo.
+echo Commands:
+echo   Status:  nssm status FileTransmitService
+echo   Start:   nssm start  FileTransmitService
+echo   Stop:    nssm stop   FileTransmitService
+echo   Restart: nssm restart FileTransmitService
+echo   Remove:  nssm remove FileTransmitService confirm
+echo.
+echo Or manage via: services.msc  (look for "File Transmission Service")
+echo.
 
 pause
