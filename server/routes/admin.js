@@ -40,7 +40,7 @@ router.put('/settings', adminAuth, (req, res) => {
     'detectArchiveByContent',
     'recursiveArchiveCheck',
     'sevenZipPath',
-    'enableAntivirusScan',
+    'enableVirusDetect',
     'ipFilter',
   ];
 

@@ -39,7 +39,7 @@ function loadConfig() {
   if (config.detectArchiveByContent === undefined) config.detectArchiveByContent = false;
   if (config.recursiveArchiveCheck === undefined) config.recursiveArchiveCheck = false;
   if (config.sevenZipPath === undefined) config.sevenZipPath = '';
-  if (config.enableAntivirusScan === undefined) config.enableAntivirusScan = false;
+  if (config.enableVirusDetect === undefined) config.enableVirusDetect = false;
   if (!config.ipFilter) {
     config.ipFilter = {
       upload: { enabled: false, mode: 'allow', list: [] },

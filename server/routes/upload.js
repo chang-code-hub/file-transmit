@@ -9,7 +9,7 @@ const { getConfig } = require('../config');
 const { createFile, addFileRecord, getFilesByUserId, validateFileIds } = require('../db');
 const ipFilter = require('../middleware/ipFilter');
 const logger = require('../utils/logger');
-const { scanFile } = require('../services/avScan');
+
 const { inspectArchives } = require('../services/archiveCheck');
 
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB per chunk
@@ -227,7 +227,9 @@ router.post('/complete', async (req, res) => {
     }
 
     // Reassemble each file from chunks
+    // 跳过不完整的文件（部分分块可能因为客户端网络问题未到达）
     const assembledFiles = [];
+    const skippedFiles = [];
     for (let fi = 0; fi < manifest.files.length; fi++) {
       const fileInfo = manifest.files[fi];
       const totalChunks = Math.ceil(fileInfo.size / CHUNK_SIZE);
@@ -235,11 +237,22 @@ router.post('/complete', async (req, res) => {
       // Verify all chunks received
       const received = manifest.receivedChunks?.[fi] || [];
       if (received.length < totalChunks) {
-        logger.log(`[上传] 完成失败: ID=${fileId}, 文件 "${fileInfo.name}" 分块不完整 (${received.length}/${totalChunks})`);
-        return res.status(400).json({
-          error: `文件 "${fileInfo.name}" 分块不完整 (已收到 ${received.length}/${totalChunks})`,
-        });
+        logger.log(`[上传] 跳过不完整文件: ID=${fileId}, 文件="${fileInfo.name}" 分块不完整 (${received.length}/${totalChunks})`);
+        skippedFiles.push({ name: fileInfo.name, reason: '分块不完整' });
+        continue;
       }
+
+      // Verify each chunk file exists on disk
+      let allChunksExist = true;
+      for (let ci = 0; ci < totalChunks; ci++) {
+        if (!fs.existsSync(path.join(chunksDir, `${fi}_${ci}`))) {
+          logger.log(`[上传] 跳过文件: ID=${fileId}, 文件="${fileInfo.name}" 缺少分块 ${ci}/${totalChunks}`);
+          skippedFiles.push({ name: fileInfo.name, reason: `缺少分块 ${ci}` });
+          allChunksExist = false;
+          break;
+        }
+      }
+      if (!allChunksExist) continue;
 
       // Handle duplicate filenames
       let storedName = fileInfo.name;
@@ -259,13 +272,7 @@ router.post('/complete', async (req, res) => {
       const writeStream = fs.createWriteStream(finalPath);
 
       for (let ci = 0; ci < totalChunks; ci++) {
-        const chunkPath = path.join(chunksDir, `${fi}_${ci}`);
-        if (!fs.existsSync(chunkPath)) {
-          writeStream.close();
-          logger.log(`[上传] 完成失败: ID=${fileId}, 缺少分块 ${fi}_${ci}`);
-          return res.status(400).json({ error: `缺少分块: ${fi}_${ci}` });
-        }
-        const chunkData = fs.readFileSync(chunkPath);
+        const chunkData = fs.readFileSync(path.join(chunksDir, `${fi}_${ci}`));
         writeStream.write(chunkData);
       }
 
@@ -284,14 +291,22 @@ router.post('/complete', async (req, res) => {
       });
     }
 
-    // --- 压缩包检查 ---
+    // 如果没有一个文件组装成功，返回错误
+    if (assembledFiles.length === 0) {
+      logger.log(`[上传] 完成失败: ID=${fileId}, 所有文件分块均不完整`);
+      try { fs.rmSync(folderPath, { recursive: true }); } catch {}
+      return res.status(400).json({ error: '所有文件上传均不完整，请重试' });
+    }
+
+    // --- 压缩包检查（含病毒检测） ---
     let archiveReport = null;
     try {
-      archiveReport = inspectArchives(folderPath, {
+      archiveReport = await inspectArchives(folderPath, {
         blockEncryptedArchives: config.blockEncryptedArchives,
         detectArchiveByContent: config.detectArchiveByContent,
         recursiveArchiveCheck: config.recursiveArchiveCheck,
         sevenZipPath: config.sevenZipPath,
+        enableVirusDetect: config.enableVirusDetect,
       });
     } catch (err) {
       logger.error(`[归档检查] 检查异常: ${err.message}`);
@@ -306,6 +321,23 @@ router.post('/complete', async (req, res) => {
         blocked: true,
         reason: 'encrypted_archive',
         archiveResults: archiveReport.files,
+      });
+    }
+
+    // --- 病毒检测结果检查（由 archiveCheck 解压时执行） ---
+    if (archiveReport && archiveReport.virusDetected) {
+      const { virusBeforeCount, virusAfterCount, virusMissing } = archiveReport;
+      logger.log(`[上传] 病毒检测发现异常: ID=${fileId}, 文件减少 ${virusMissing} 个 (${virusBeforeCount}→${virusAfterCount})`);
+      try { fs.rmSync(folderPath, { recursive: true }); } catch {}
+      return res.status(400).json({
+        error: `文件安全检查未通过：疑似杀毒软件删除了可疑文件，上传已被拒绝`,
+        blocked: true,
+        reason: 'virus_detected',
+        virusResult: {
+          extractedCount: virusBeforeCount,
+          remainingCount: virusAfterCount,
+          missingCount: virusMissing,
+        },
       });
     }
 
@@ -338,11 +370,6 @@ router.post('/complete', async (req, res) => {
       });
     }
 
-    // Antivirus scan if enabled
-    if (config.enableAntivirusScan) {
-      scanFile(folderPath).catch(() => {});
-    }
-
     manifest.status = 'completed';
     // Clean up manifest
     try {
@@ -353,14 +380,22 @@ router.post('/complete', async (req, res) => {
     } catch {}
 
     const totalSize = assembledFiles.reduce((sum, f) => sum + f.size, 0);
-    logger.log(`[上传] 完成: ID=${fileId}, 文件数=${assembledFiles.length}, 总大小=${(totalSize / 1024 / 1024).toFixed(1)}MB, IP=${ip}, 保留至=${new Date(expiresAt).toLocaleString()}`);
+    const skippedInfo = skippedFiles.length > 0
+      ? `，${skippedFiles.length} 个文件因分块缺失被跳过`
+      : '';
+    logger.log(`[上传] 完成: ID=${fileId}, 文件数=${assembledFiles.length}${skippedInfo}, 总大小=${(totalSize / 1024 / 1024).toFixed(1)}MB, IP=${ip}, 保留至=${new Date(expiresAt).toLocaleString()}`);
 
     res.json({
       success: true,
       fileId,
       fileCount: assembledFiles.length,
+      totalCount: manifest.files.length,
+      succeededFiles: assembledFiles.map(f => ({ name: f.originalName, size: f.size })),
+      failedFiles: skippedFiles.length > 0 ? skippedFiles : [],
       expiresAt,
-      message: `上传成功，文件 ID: ${fileId}`,
+      message: skippedFiles.length > 0
+        ? `上传部分成功（${assembledFiles.length}/${manifest.files.length}），文件 ID: ${fileId}`
+        : `上传成功，文件 ID: ${fileId}`,
       archiveResults: archiveReport ? archiveReport.files : [],
     });
   } catch (err) {

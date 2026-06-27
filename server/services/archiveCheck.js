@@ -12,6 +12,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+const logger = require('../utils/logger');
 
 // ============================================================
 // 常量定义
@@ -41,6 +42,132 @@ const SIZE_LIMIT = 5 * 1024 * 1024 * 1024; // 5 GB
 
 /** 压缩包内最大条目数（防止格式错误的文件导致无限循环） */
 const MAX_ENTRIES = 100000;
+
+/**
+ * 递归统计目录中的文件数量（不含目录本身）
+ * @param {string} dirPath
+ * @returns {number}
+ */
+function countFilesRecursive(dirPath) {
+  if (!fs.existsSync(dirPath)) return 0;
+  let count = 0;
+  try {
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        count += countFilesRecursive(path.join(dirPath, entry.name));
+      } else if (entry.isFile()) {
+        count++;
+      }
+    }
+  } catch (err) {
+    logger.error(`[归档检查] 统计文件失败: ${dirPath} - ${err.message}`);
+  }
+  return count;
+}
+
+/**
+ * 通过 7z l 命令获取压缩包内应有的文件列表（不含目录）
+ * 在解压前调用，获取不受杀毒软件影响的权威文件清单
+ * @param {string} sevenZipPath - 7z 可执行文件路径
+ * @param {string} archivePath - 压缩包文件路径
+ * @returns {{ files: string[], count: number }|null} 文件列表和数量，失败时返回 null
+ */
+function listFilesInArchive(sevenZipPath, archivePath) {
+  try {
+    const output = execSync(`"${sevenZipPath}" l -slt "${archivePath}"`, {
+      encoding: 'utf-8',
+      timeout: 60000,
+      maxBuffer: 50 * 1024 * 1024,
+    });
+
+    const files = [];
+    const lines = output.split('\n');
+    let currentPath = '';
+    let isFolder = false;
+
+    // 构建压缩包自身路径的排除集合，防止将压缩包自身统计为内部文件
+    // 7z 可能输出 basename 或完整路径，且分隔符可能是 \ 或 /
+    const archiveSelfSet = new Set([
+      path.basename(archivePath),
+      archivePath,
+      archivePath.replace(/\\/g, '/'),
+    ]);
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+
+      if (trimmed.startsWith('Path = ')) {
+        // 保存上一个条目（跳过目录和压缩包自身路径）
+        if (currentPath && !isFolder && !archiveSelfSet.has(currentPath)) {
+          files.push(currentPath);
+        }
+        currentPath = trimmed.substring(7).trim();
+        isFolder = false;
+        continue;
+      }
+
+      if (trimmed.startsWith('Folder = ') && trimmed.includes('+')) {
+        isFolder = true;
+      }
+      if (trimmed.startsWith('Attributes = ')) {
+        const attrValue = trimmed.substring(13).trim();
+        if (attrValue.startsWith('D')) {
+          isFolder = true;
+        }
+      }
+    }
+
+    // 处理最后一个条目
+    if (currentPath && !isFolder && !archiveSelfSet.has(currentPath)) {
+      files.push(currentPath);
+    }
+
+    return { files, count: files.length };
+  } catch (err) {
+    logger.error(`[病毒检测] 7z 获取文件列表失败: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * 递归列挙目录中的文件路径（相对于 basePath）
+ * @param {string} dirPath - 目录路径
+ * @param {string} [basePath] - 基准路径（默认等于 dirPath）
+ * @returns {string[]} 相对文件路径数组
+ */
+function listFilesRecursive(dirPath, basePath = dirPath) {
+  if (!fs.existsSync(dirPath)) return [];
+  const files = [];
+  try {
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        files.push(...listFilesRecursive(fullPath, basePath));
+      } else if (entry.isFile()) {
+        files.push(path.relative(basePath, fullPath));
+      }
+    }
+  } catch (err) {
+    logger.error(`[归档检查] 列挙文件失败: ${dirPath} - ${err.message}`);
+  }
+  return files;
+}
+
+/**
+ * 根据解压出的文件数量自动决定杀毒软件扫描等待时长
+ * 文件越多，杀毒软件需要的时间越长
+ * @param {number} fileCount - 解压出的文件数
+ * @returns {number} 等待秒数
+ */
+function calcVirusDetectWait(fileCount) {
+  if (fileCount <= 10)   return 10;
+  if (fileCount <= 50)   return 20;
+  if (fileCount <= 200)  return 30;
+  if (fileCount <= 1000) return 45;
+  return 60;
+}
 
 // ============================================================
 // 工具函数
@@ -1096,13 +1223,16 @@ function inspectNestedArchiveWith7z(sevenZipPath, archivePath, nestedPath) {
  * 当开启递归检测且配置了 7z 时，不再仅通过文件名后缀判断嵌套压缩包，
  * 而是实际解压出来，对所有解压出的文件进行完整的压缩包检测。
  *
+ * 在顶层调用时（depth=0），如果启用了病毒检测（enableVirusDetect），
+ * 会在解压完成后等待一定时间，然后对比文件数量来判断杀毒软件是否删除了可疑文件。
+ *
  * @param {string} sevenZipPath - 7z 可执行文件路径
  * @param {string} archivePath - 压缩包文件路径
  * @param {object} config - 检测配置（传入 inspectArchives）
- * @returns {Array} 递归检测结果（仅包含压缩包文件的结果）
+ * @returns {Promise<Array>} 递归检测结果（仅包含压缩包文件的结果）
  */
-function extractAndRecheck(sevenZipPath, archivePath, config, depth = 0) {
-  const MAX_RECURSION_DEPTH = 3;
+async function extractAndRecheck(sevenZipPath, archivePath, config, depth = 0) {
+  const MAX_RECURSION_DEPTH = 5;
 
   if (depth >= MAX_RECURSION_DEPTH) {
     return [{ note: `递归深度已达上限 (${MAX_RECURSION_DEPTH})，跳过解压检测`, skipped: true }];
@@ -1128,13 +1258,25 @@ function extractAndRecheck(sevenZipPath, archivePath, config, depth = 0) {
 
     // 使用 7z x 解压到临时目录
     try {
-      execSync(`"${sevenZipPath}" x -o"${tempDir}" -y "${archivePath}"`, {
+      const sizeMB = (stat.size / (1024 * 1024)).toFixed(1);
+      logger.log(`[归档检测] 开始解压: ${path.basename(archivePath)} (${sizeMB} MB) → 临时目录`);
+
+      const extractOutput = execSync(`"${sevenZipPath}" x -o"${tempDir}" -y "${archivePath}"`, {
         encoding: 'utf-8',
         timeout: 120000,
         maxBuffer: 10 * 1024 * 1024,
       });
+
+      // 输出 7z 解压摘要（最后几行包含文件数量、大小等统计信息）
+      const lines = extractOutput.trim().split('\n');
+      const summary = lines.slice(-5).filter(l => l.trim()).join('; ');
+      const extractedCount = countFilesRecursive(tempDir);
+      logger.log(`[归档检测] 解压完成: ${extractedCount} 个文件, ${summary}`);
     } catch (err) {
       const errMsg = (err.stderr || err.stdout || err.message || '').toString();
+      const errLines = errMsg.trim().split('\n');
+      const errSummary = errLines.slice(-3).filter(l => l.trim()).join('; ');
+      logger.error(`[归档检测] 解压失败: ${path.basename(archivePath)} - ${errSummary}`);
       return [{
         note: `解压失败: ${errMsg.substring(0, 200)}`,
         skipped: true,
@@ -1143,7 +1285,7 @@ function extractAndRecheck(sevenZipPath, archivePath, config, depth = 0) {
 
     // 对解压出的所有文件进行递归检测
     const subConfig = { ...config, _depth: depth + 1 };
-    const subResult = inspectArchives(tempDir, subConfig);
+    const subResult = await inspectArchives(tempDir, subConfig);
 
     // 收集发现的压缩文件（标记为递归发现）
     for (const f of subResult.files) {
@@ -1158,6 +1300,97 @@ function extractAndRecheck(sevenZipPath, archivePath, config, depth = 0) {
     if (subResult.blocked) {
       findings._blocked = true;
       findings._blockReasons = subResult.blockReasons;
+    }
+
+    // 传递子检测的病毒检测结果
+    if (subResult.virusDetected) {
+      findings._virusDetected = true;
+      findings._virusMissing = subResult.virusMissing;
+      findings._virusMissingFiles = subResult.virusMissingFiles || [];
+      findings._virusBeforeCount = subResult.virusBeforeCount;
+      findings._virusAfterCount = subResult.virusAfterCount;
+    }
+
+    // --- 病毒检测（7z 预期文件列表 vs 解压后实际文件列表）---
+    // 对每一层解压都执行病毒检测（depth >= 0），确保嵌套压缩包内的文件也被扫描
+    // 解压前通过 7z l 获取压缩包内应有的文件列表，解压后与实际文件系统对比
+    // 若文件缺失，说明杀毒软件删除了可疑文件
+    if (config.enableVirusDetect) {
+      const archiveFileList = listFilesInArchive(sevenZipPath, archivePath);
+
+      if (archiveFileList && archiveFileList.count > 0) {
+        const actualFiles = listFilesRecursive(tempDir);
+        const expectedSet = new Set(archiveFileList.files);
+        const actualSet = new Set(actualFiles);
+
+        // 找出缺失的文件（在预期列表中但不在实际文件系统中）
+        const missingFiles = archiveFileList.files.filter(f => !actualSet.has(f));
+
+        // 找出多出的文件（在实际文件系统中但不在预期列表中，可能为解压产生的临时文件）
+        const extraFiles = actualFiles.filter(f => !expectedSet.has(f));
+
+        if (missingFiles.length > 0) {
+          const maxShow = 20;
+          const showFiles = missingFiles.slice(0, maxShow);
+          const fileList = showFiles.map(f => `  - ${f}`).join('\n');
+          const suffix = missingFiles.length > maxShow
+            ? `\n  ... 及其他 ${missingFiles.length - maxShow} 个文件`
+            : '';
+
+          const depthTag = depth > 0 ? `[深度${depth}] ` : '';
+          logger.log(`[病毒检测] ${depthTag}⚠️ 发现 ${missingFiles.length} 个文件缺失，疑似被杀毒软件删除：\n${fileList}${suffix}`);
+          findings._virusDetected = true;
+          findings._virusMissing = missingFiles.length;
+          findings._virusMissingFiles = missingFiles;
+          findings._virusBeforeCount = archiveFileList.count;
+          findings._virusAfterCount = actualFiles.length;
+        } else {
+          const depthTag = depth > 0 ? `[深度${depth}] ` : '';
+          logger.log(`[病毒检测] ${depthTag}✅ 文件列表一致 (共 ${actualFiles.length} 个文件)，未发现异常`);
+        }
+
+        // 多出文件仅记录日志，不视为病毒
+        if (extraFiles.length > 0) {
+          const depthTag = depth > 0 ? `[深度${depth}] ` : '';
+          logger.log(`[病毒检测] ${depthTag}ℹ️ 解压后多出 ${extraFiles.length} 个文件（可能为符号链接或临时文件），已忽略`);
+        }
+      } else if (!archiveFileList) {
+        // 7z 列表获取失败，回退到等待对比模式
+        const depthTag = depth > 0 ? `[深度${depth}] ` : '';
+        logger.log(`[病毒检测] ${depthTag}7z 获取文件列表失败，回退到等待对比模式`);
+        const beforeCount = countFilesRecursive(tempDir);
+        if (beforeCount > 0) {
+          const waitSeconds = calcVirusDetectWait(beforeCount);
+          logger.log(`[病毒检测] ${depthTag}解压后共 ${beforeCount} 个文件，等待 ${waitSeconds} 秒以便杀毒软件扫描...`);
+          await new Promise(resolve => setTimeout(resolve, waitSeconds * 1000));
+
+          const beforeFiles = listFilesRecursive(tempDir);
+          const afterFiles = listFilesRecursive(tempDir);
+          const afterSet = new Set(afterFiles);
+          const missingFiles = beforeFiles.filter(f => !afterSet.has(f));
+
+          if (missingFiles.length > 0) {
+            const maxShow = 20;
+            const showFiles = missingFiles.slice(0, maxShow);
+            const fileList = showFiles.map(f => `  - ${f}`).join('\n');
+            const suffix = missingFiles.length > maxShow
+              ? `\n  ... 及其他 ${missingFiles.length - maxShow} 个文件`
+              : '';
+
+            logger.log(`[病毒检测] ${depthTag}⚠️ 文件数量减少！${beforeFiles.length} → ${afterFiles.length}，减少 ${missingFiles.length} 个文件：\n${fileList}${suffix}`);
+            findings._virusDetected = true;
+            findings._virusMissing = missingFiles.length;
+            findings._virusMissingFiles = missingFiles;
+            findings._virusBeforeCount = beforeFiles.length;
+            findings._virusAfterCount = afterFiles.length;
+          } else {
+            logger.log(`[病毒检测] ${depthTag}✅ 文件数量一致 (${beforeFiles.length})，未发现异常`);
+          }
+        }
+      } else {
+        // archiveFileList.count === 0，压缩包内无文件
+        logger.log(`[病毒检测] ${depth > 0 ? `[深度${depth}] ` : ''}压缩包内无文件，跳过病毒检测`);
+      }
     }
   } catch (err) {
     findings.push({
@@ -1186,7 +1419,7 @@ function extractAndRecheck(sevenZipPath, archivePath, config, depth = 0) {
  * @param {boolean} config.recursiveArchiveCheck - 是否递归检测压缩包内文件
  * @returns {{ files: Array, blocked: boolean, blockReasons: string[], archivesFound: number, encryptedFound: number }}
  */
-function inspectArchives(folderPath, config) {
+async function inspectArchives(folderPath, config) {
   const {
     blockEncryptedArchives = true,
     sevenZipPath = '',
@@ -1206,6 +1439,11 @@ function inspectArchives(folderPath, config) {
     blockReasons: [],
     archivesFound: 0,
     encryptedFound: 0,
+    virusDetected: false,
+    virusMissing: 0,
+    virusMissingFiles: [],
+    virusBeforeCount: 0,
+    virusAfterCount: 0,
   };
 
   // 列出目录中的所有文件（仅顶层）
@@ -1344,11 +1582,26 @@ function inspectArchives(folderPath, config) {
     // 4. 递归检测压缩包内文件
     //    开启 7z 时：实际解压到临时目录，再对所有解压文件进行检测
     //    未开启 7z 时：仅通过文件名后缀判断嵌套压缩包
-    if (recursiveArchiveCheck && fileResult.contents.length > 0) {
+    //    开启病毒检测时，即使未开启递归检测也要解压（用于对比文件列表）
+    if ((recursiveArchiveCheck || config.enableVirusDetect) && fileResult.contents.length > 0) {
       if (sevenZipPath && !fileResult.isEncrypted) {
         // 使用 7z 解压后实际检测解压出的文件
         const currentDepth = config._depth || 0;
-        fileResult.recursiveFindings = extractAndRecheck(sevenZipPath, filePath, config, currentDepth);
+        fileResult.recursiveFindings = await extractAndRecheck(sevenZipPath, filePath, config, currentDepth);
+
+        // 递归检测到病毒时，向上传递
+        if (fileResult.recursiveFindings._virusDetected) {
+          result.virusDetected = true;
+          result.virusMissing = fileResult.recursiveFindings._virusMissing || 0;
+          result.virusMissingFiles = fileResult.recursiveFindings._virusMissingFiles || [];
+          result.virusBeforeCount = fileResult.recursiveFindings._virusBeforeCount || 0;
+          result.virusAfterCount = fileResult.recursiveFindings._virusAfterCount || 0;
+          delete fileResult.recursiveFindings._virusDetected;
+          delete fileResult.recursiveFindings._virusMissing;
+          delete fileResult.recursiveFindings._virusMissingFiles;
+          delete fileResult.recursiveFindings._virusBeforeCount;
+          delete fileResult.recursiveFindings._virusAfterCount;
+        }
 
         // 递归检测到加密文件时，向上传递阻止信号
         if (fileResult.recursiveFindings._blocked) {

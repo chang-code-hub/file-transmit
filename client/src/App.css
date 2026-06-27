@@ -231,6 +231,12 @@ body {
   border: 1px solid #bee3f8;
 }
 
+.alert-warning {
+  background: #fffdf0;
+  color: #975a16;
+  border: 1px solid #fbd38d;
+}
+
 /* App loading screen */
 .app-loading {
   display: flex;

@@ -41,7 +41,7 @@ file-transmit/
 │   │   └── download.js       # GET /api/download/:fileId (detail), GET /api/download/:fileId/:fileName (download)
 │   ├── services/
 │   │   ├── cleanup.js        # setInterval (30min): deletes expired files+folders+DB records, removes empty dirs
-│   │   └── avScan.js         # Windows-only: spawns Huorong HipsMain.exe -s <path>; no-op on Linux
+│   │   └── archiveCheck.js   # Archive inspection + virus detection: encrypted detection, recursive 7z extraction, count-wait-recompare
 │   └── utils/
 │       └── ipMatch.js        # Test IP against CIDR, hyphen-range, or exact-match expressions
 ├── client/
@@ -51,7 +51,7 @@ file-transmit/
 │       ├── pages/
 │       │   ├── UploadPage.jsx     # Drag-drop zone, multi-file select, auto-rename dupes, description, history
 │       │   ├── DownloadPage.jsx   # Single ID input → opens FileDetailModal
-│       │   └── AdminPage.jsx      # Password gate → all settings (file types, IP filters, storage, antivirus)
+│       │   └── AdminPage.jsx      # Password gate → all settings (file types, IP filters, storage, archive check, virus detect)
 │       └── components/
 │           ├── PasswordModal.jsx   # Reusable admin login modal
 │           ├── FileDetailModal.jsx # File metadata + file list with download links
