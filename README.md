@@ -2,6 +2,8 @@
 
 一个自托管的文件传输 Web 应用 —— 用户上传文件后获得一个 8 位随机 ID，其他人凭此 ID 即可下载。
 
+![上传文件](screenshots/上传文件.png)
+
 ## 功能特性
 
 ### 管理面板
@@ -75,27 +77,109 @@ scripts\install-service.bat    # 安装服务
 scripts\uninstall-service.bat  # 卸载服务
 ```
 
+## 使用说明
+
+### 上传文件
+
+1. 打开首页即是上传页面，支持**点击选择文件**或**拖拽文件**到虚线区域
+2. 可同时选择多个文件，重名文件会自动添加序号（如 `file(1).txt`）
+3. 在底部输入框填写文件描述（可选），便于接收方了解文件内容
+4. 点击"开始上传"，等待进度条完成
+
+![上传文件](screenshots/上传文件.png)
+
+### 分享文件
+
+上传成功后，页面会显示一个醒目的 **8 位文件 ID**（如 `A3bF9kQ2`），点击即可复制。将这个 ID 通过任意方式（微信、邮件等）发送给接收方即可。
+
+![上传成功](screenshots/上传文件成功.png)
+
+你也可以点击右上角的**时钟图标**查看本地上传历史，批量验证哪些 ID 仍有效。
+
+### 下载文件
+
+1. 接收方打开网站，切换到**下载文件**页面
+2. 输入 8 位文件 ID，点击"查看文件"
+
+![下载页面](screenshots/下载文件.png)
+
+3. 弹出文件详情窗口，展示描述信息和文件列表
+
+![文件详情](screenshots/文件详情.png)
+
+4. 点击文件名即可下载
+
+### 管理设置
+
+在页面顶部导航栏点击**管理设置**，输入管理员密码登录。
+
+![管理设置](screenshots/管理设置.png)
+
+#### 文件类型控制
+
+勾选允许上传的文件类别，或在下方的"自定义扩展名"中添加额外的扩展名。未勾选的类型将被拒绝上传。
+
+![文件类型设置](screenshots/文件类型设置.png)
+
+#### 安全设置
+
+- **拦截加密压缩包**：拒绝需要密码才能解压的压缩包，防止病毒绕过扫描
+- **通过文件内容检测压缩包类型**：读取文件头（magic bytes）判断真实类型，而非仅依赖扩展名
+- **递归检测压缩包内文件**：解压并检查压缩包内每一层文件的类型是否合法
+- **启用杀毒扫描**：上传后自动调用火绒进行静默扫描（仅 Windows 有效）
+- **7-Zip 路径**：用于压缩包递归检测的 7z.exe 路径
+
+![安全设置](screenshots/安全设置.png)
+
+#### IP 访问控制
+
+可为上传和下载分别配置 IP 过滤规则：
+
+- **模式切换**：
+  - **拒绝模式（deny）**：禁止列表中的 IP 访问，其余放行（黑名单）
+  - **允许模式（allow）**：仅允许列表中的 IP 访问，其余拒绝（白名单）
+- **地址格式**：支持 CIDR（`192.168.1.0/24`）、范围（`192.168.1.1-192.168.1.100`）、精确匹配（`10.0.0.1`）
+- **启用开关**：关闭后 IP 过滤不生效
+
+![IP过滤设置](screenshots/IP过滤设置.png)
+
+#### 存储与保留
+
+- **存储路径**：文件在服务器上的存放目录，支持相对路径和绝对路径
+- **保留时长**：文件上传后保留的小时数，超时自动清理（每 30 分钟执行一次清理任务）
+
 ## 配置说明
 
 首次启动后会在项目根目录自动生成 `config.json`，主要配置项：
 
 ```json
 {
-  "adminPassword": "admin123",        // 管理员密码，启动后请立即修改
-  "storagePath": "files",  // 文件存储路径
-  "retentionHours": 24,               // 文件保留时长（小时）
-  "allowedFileTypes": { /* 按类别预设的允许扩展名 */ },
-  "blockEncryptedArchives": true,     // 拦截加密压缩包
-  "detectArchiveByContent": true,     // 通过文件内容检测压缩包
-  "recursiveArchiveCheck": true,      // 递归检测压缩包内文件
-  "enableAntivirusScan": true,        // 启用杀毒扫描（仅 Windows）
-  "sevenZipPath": "C:\\Program Files\\7-Zip\\7z.exe",  // 7-Zip 路径（用于压缩包检测）
+  "port": 3000,
+  "adminPassword": "admin123",
+  "storagePath": "files",
+  "retentionHours": 24,
+  "allowedFileTypes": {
+    "documents": [".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".csv", ".rtf", ".odt", ".ods", ".odp"],
+    "images": [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg", ".webp", ".ico", ".tiff", ".tif"],
+    "archives": [".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".iso"],
+    "videos": [".mp4", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".mkv"],
+    "audio": [".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", ".m4a"],
+    "code": [".js", ".ts", ".jsx", ".tsx", ".py", ".java", ".c", ".cpp", ".h", ".cs", ".go", ".rs", ".rb", ".php", ".html", ".css", ".json", ".xml", ".yaml", ".yml", ".sql", ".sh", ".bat", ".ps1"],
+    "custom": []
+  },
+  "blockEncryptedArchives": true,
+  "detectArchiveByContent": true,
+  "recursiveArchiveCheck": true,
+  "enableAntivirusScan": true,
+  "sevenZipPath": "C:\\Program Files\\7-Zip\\7z.exe",
   "ipFilter": {
     "upload": { "enabled": false, "mode": "deny", "list": [] },
     "download": { "enabled": false, "mode": "allow", "list": [] }
   }
 }
 ```
+
+> **注意**：启动后请立即修改 `adminPassword`，默认密码为 `admin123`。
 
 ## 项目结构
 
@@ -129,6 +213,7 @@ file-transmit/
 │           ├── FileDetailModal.jsx # 文件详情弹窗
 │           └── HistoryButton.jsx   # 上传历史按钮
 ├── config.json              # 运行时配置文件
+├── screenshots/             # 截图文档
 └── scripts/                 # 启动与服务管理脚本
 ```
 
