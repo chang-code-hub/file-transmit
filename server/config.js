@@ -46,6 +46,7 @@ function loadConfig() {
   if (config.blockEncryptedArchives === undefined) config.blockEncryptedArchives = true;
   if (config.detectArchiveByContent === undefined) config.detectArchiveByContent = false;
   if (config.recursiveArchiveCheck === undefined) config.recursiveArchiveCheck = false;
+  if (config.sevenZipPath === undefined) config.sevenZipPath = '';
   if (config.enableAntivirusScan === undefined) config.enableAntivirusScan = false;
   if (!config.ipFilter) {
     config.ipFilter = {

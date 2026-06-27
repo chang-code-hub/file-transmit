@@ -303,24 +303,39 @@ export default function AdminPage() {
             />
             <label htmlFor="allowEncrypted" style={{ margin: 0 }}>阻止加密压缩文件上传</label>
           </div>
-          <div className="form-group" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <input
-              type="checkbox"
-              checked={settings.detectArchiveByContent || false}
-              onChange={e => updateSetting('detectArchiveByContent', e.target.checked)}
-              id="detectByContent"
-            />
-            <label htmlFor="detectByContent" style={{ margin: 0 }}>通过文件内容判断是否为压缩文件</label>
-          </div>
-          <div className="form-group" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <input
-              type="checkbox"
-              checked={settings.recursiveArchiveCheck || false}
-              onChange={e => updateSetting('recursiveArchiveCheck', e.target.checked)}
-              id="recursiveCheck"
-            />
-            <label htmlFor="recursiveCheck" style={{ margin: 0 }}>递归检测压缩包内文件</label>
-          </div>
+          
+          {settings.blockEncryptedArchives && (
+            <>
+              <div className="form-group" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={settings.detectArchiveByContent || false}
+                  onChange={e => updateSetting('detectArchiveByContent', e.target.checked)}
+                  id="detectByContent"
+                />
+                <label htmlFor="detectByContent" style={{ margin: 0 }}>通过文件内容判断是否为压缩文件</label>
+              </div>
+              <div className="form-group" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={settings.recursiveArchiveCheck || false}
+                  onChange={e => updateSetting('recursiveArchiveCheck', e.target.checked)}
+                  id="recursiveCheck"
+                />
+                <label htmlFor="recursiveCheck" style={{ margin: 0 }}>递归检测压缩包内文件</label>
+              </div>
+              <div className="form-group">
+                <label>7z 可执行文件路径</label>
+                <input
+                  type="text"
+                  value={settings.sevenZipPath || ''}
+                  onChange={e => updateSetting('sevenZipPath', e.target.value)}
+                  placeholder='例如 C:\Program Files\7-Zip\7z.exe'
+                />
+                <div className="hint">配置后递归检测时将调用 7z 解压嵌套压缩包判断是否加密，留空则仅通过文件名后缀判断</div>
+              </div>
+            </>
+          )}
         </section>
 
         {/* Antivirus */}

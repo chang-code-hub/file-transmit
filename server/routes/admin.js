@@ -33,6 +33,7 @@ router.put('/settings', adminAuth, (req, res) => {
     'blockEncryptedArchives',
     'detectArchiveByContent',
     'recursiveArchiveCheck',
+    'sevenZipPath',
     'enableAntivirusScan',
     'ipFilter',
   ];

@@ -9,6 +9,7 @@ const { getConfig } = require('../config');
 const { createFile, addFileRecord, getFilesByUserId, validateFileIds } = require('../db');
 const ipFilter = require('../middleware/ipFilter');
 const { scanFile } = require('../services/avScan');
+const { inspectArchives } = require('../services/archiveCheck');
 
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB per chunk
 
@@ -252,6 +253,30 @@ router.post('/complete', async (req, res) => {
       });
     }
 
+    // --- 压缩包检查 ---
+    let archiveReport = null;
+    try {
+      archiveReport = inspectArchives(folderPath, {
+        blockEncryptedArchives: config.blockEncryptedArchives,
+        detectArchiveByContent: config.detectArchiveByContent,
+        recursiveArchiveCheck: config.recursiveArchiveCheck,
+        sevenZipPath: config.sevenZipPath,
+      });
+    } catch (err) {
+      console.error(`[归档检查] 检查异常: ${err.message}`);
+    }
+
+    if (archiveReport && archiveReport.blocked) {
+      // 阻止上传：清理已组装的文件和目录
+      try { fs.rmSync(folderPath, { recursive: true }); } catch {}
+      return res.status(400).json({
+        error: `上传被阻止: ${archiveReport.blockReasons.join('; ')}`,
+        blocked: true,
+        reason: 'encrypted_archive',
+        archiveResults: archiveReport.files,
+      });
+    }
+
     // Clean up chunks directory
     try { fs.rmSync(chunksDir, { recursive: true }); } catch {}
 
@@ -301,6 +326,7 @@ router.post('/complete', async (req, res) => {
       fileCount: assembledFiles.length,
       expiresAt,
       message: `上传成功，文件 ID: ${fileId}`,
+      archiveResults: archiveReport ? archiveReport.files : [],
     });
   } catch (err) {
     res.status(500).json({ error: '完成上传失败: ' + err.message });

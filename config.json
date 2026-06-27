@@ -1,5 +1,5 @@
 {
-  "adminPassword": "111",
+  "adminPassword": "admin123",
   "storagePath": "D:\\FileTransmit\\file",
   "retentionHours": 24,
   "allowedFileTypes": {
@@ -95,14 +95,15 @@
     "upload": {
       "enabled": false,
       "mode": "deny",
-      "list": [
-        "::1"
-      ]
+      "list": []
     },
     "download": {
-      "enabled": false,
+      "enabled": true,
       "mode": "allow",
-      "list": []
+      "list": [
+        "10.170.0.0/16"
+      ]
     }
-  }
+  },
+  "sevenZipPath": "C:\\Program Files\\7-Zip\\7z.exe"
 }
