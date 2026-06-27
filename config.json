@@ -1,7 +1,8 @@
 {
+  "port": 80,
   "adminPassword": "admin123",
-  "storagePath": "D:\\FileTransmit\\file",
-  "retentionHours": 24,
+  "storagePath": "files",
+  "retentionHours": 1,
   "allowedFileTypes": {
     "documents": [
       ".pdf",
@@ -98,7 +99,7 @@
       "list": []
     },
     "download": {
-      "enabled": true,
+      "enabled": false,
       "mode": "allow",
       "list": [
         "10.170.0.0/16"

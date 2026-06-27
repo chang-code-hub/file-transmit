@@ -8,3 +8,5 @@ client/node_modules/
 .env
 test_archives/
 logs/
+scripts/nssm.exe
+files/

@@ -125,6 +125,24 @@ function getAllSettings() {
   return result;
 }
 
+// Orphan cleanup helpers
+function getAllFileRecords() {
+  return getDb().prepare('SELECT * FROM file_records').all();
+}
+
+function deleteFileRecordById(id) {
+  return getDb().prepare('DELETE FROM file_records WHERE id = ?').run(id);
+}
+
+function getAllFiles() {
+  return getDb().prepare('SELECT * FROM files').all();
+}
+
+function deleteFileById(id) {
+  // file_records cascade-deletes via FK
+  return getDb().prepare('DELETE FROM files WHERE id = ?').run(id);
+}
+
 // Stats
 function getStats() {
   const fileCount = getDb().prepare('SELECT COUNT(*) as count FROM files').get();
@@ -146,6 +164,10 @@ module.exports = {
   getFilesByUserId,
   validateFileIds,
   deleteExpiredFiles,
+  getAllFileRecords,
+  deleteFileRecordById,
+  getAllFiles,
+  deleteFileById,
   getSetting,
   setSetting,
   getAllSettings,

@@ -1,7 +1,13 @@
 const fs = require('fs');
 const path = require('path');
 const { getConfig } = require('../config');
-const { deleteExpiredFiles } = require('../db');
+const {
+  deleteExpiredFiles,
+  getAllFileRecords,
+  deleteFileRecordById,
+  getAllFiles,
+  deleteFileById,
+} = require('../db');
 
 const CLEANUP_INTERVAL = 30 * 60 * 1000; // 30 minutes
 
@@ -32,23 +38,77 @@ function runCleanup() {
     console.log('[清理] 开始执行清理任务...');
     const now = Date.now();
 
-    // Delete expired DB records
+    // 1. Delete expired DB records + their folders
     const expired = deleteExpiredFiles(now);
     console.log(`[清理] 删除 ${expired.length} 条过期记录`);
 
-    // Delete expired file folders
     for (const file of expired) {
       try {
         if (fs.existsSync(file.folder_path)) {
           fs.rmSync(file.folder_path, { recursive: true });
-          console.log(`[清理] 删除过期文件: ${file.folder_path}`);
+          console.log(`[清理] 删除过期文件夹: ${file.folder_path}`);
         }
       } catch (err) {
-        console.error(`[清理] 删除文件失败: ${file.folder_path}`, err.message);
+        console.error(`[清理] 删除文件夹失败: ${file.folder_path}`, err.message);
       }
     }
 
-    // Remove empty directories
+    // 2. Check file_records: if the stored file was deleted from disk, clean up the DB record
+    const allFiles = getAllFiles();
+    const allRecords = getAllFileRecords();
+    const fileMap = new Map(allFiles.map(f => [f.id, f]));
+
+    let orphanRecords = 0;
+    for (const record of allRecords) {
+      const fileEntry = fileMap.get(record.file_id);
+      if (!fileEntry) continue; // parent record already gone
+
+      const filePath = path.join(fileEntry.folder_path, record.stored_name);
+      if (!fs.existsSync(filePath)) {
+        deleteFileRecordById(record.id);
+        orphanRecords++;
+        console.log(`[清理] 删除孤立文件记录: ${filePath}`);
+      }
+    }
+    if (orphanRecords > 0) {
+      console.log(`[清理] 删除 ${orphanRecords} 条孤立文件记录`);
+    }
+
+    // 3. Check files table: if folder doesn't exist, delete DB record; if folder is empty, delete it
+    let removedFiles = 0;
+    let removedEmptyDirs = 0;
+    for (const file of allFiles) {
+      const folderExists = fs.existsSync(file.folder_path);
+      if (!folderExists) {
+        deleteFileById(file.id);
+        removedFiles++;
+        console.log(`[清理] 删除不存在文件夹的数据库记录: ${file.folder_path}`);
+        continue;
+      }
+
+      // Folder exists — check if empty
+      try {
+        const contents = fs.readdirSync(file.folder_path);
+        if (contents.length === 0) {
+          fs.rmdirSync(file.folder_path);
+          removedEmptyDirs++;
+          console.log(`[清理] 删除空文件夹: ${file.folder_path}`);
+          // Also remove the DB record since the folder is gone
+          deleteFileById(file.id);
+          removedFiles++;
+        }
+      } catch (err) {
+        console.error(`[清理] 检查文件夹失败: ${file.folder_path}`, err.message);
+      }
+    }
+    if (removedFiles > 0) {
+      console.log(`[清理] 删除 ${removedFiles} 条无效文件记录`);
+    }
+    if (removedEmptyDirs > 0) {
+      console.log(`[清理] 删除 ${removedEmptyDirs} 个空文件夹`);
+    }
+
+    // 4. Remove empty directories in storage root
     const storagePath = getConfig('storagePath');
     if (storagePath) {
       removeEmptyDirs(storagePath);

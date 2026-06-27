@@ -13,7 +13,7 @@
   - CIDR 前缀：`192.168.1.0/24`
   - 连字符范围：`192.168.1.1-192.168.1.100`
   - 精确匹配：`10.0.0.1`
-- **存储路径配置**：Windows 默认 `D:\FileTransmit\file`（无 D 盘则自动向后查找），Linux 默认 `/var/usr/FileTransmit/`
+- **存储路径配置**：Windows 默认 `files`（无 D 盘则自动向后查找），Linux 默认 `/var/usr/FileTransmit/`
 - **保留时长**：默认 24 小时，每 30 分钟自动清理过期文件及空目录
 
 ### 上传
@@ -82,7 +82,7 @@ scripts\uninstall-service.bat  # 卸载服务
 ```json
 {
   "adminPassword": "admin123",        // 管理员密码，启动后请立即修改
-  "storagePath": "D:\\FileTransmit\\file",  // 文件存储路径
+  "storagePath": "files",  // 文件存储路径
   "retentionHours": 24,               // 文件保留时长（小时）
   "allowedFileTypes": { /* 按类别预设的允许扩展名 */ },
   "blockEncryptedArchives": true,     // 拦截加密压缩包

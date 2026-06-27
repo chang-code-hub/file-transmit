@@ -8,7 +8,38 @@ const userIdMiddleware = require('./middleware/userId');
 const { startCleanup } = require('./services/cleanup');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+
+// Hot restart: stored server reference for port switching without process restart
+app.locals.httpServer = null;
+app.locals.restartServer = function (newPort) {
+  return new Promise((resolve, reject) => {
+    function listen(port, res, rej) {
+      const server = app.listen(port, () => {
+        console.log(`文件传输服务已启动: http://localhost:${port}`);
+        app.locals.httpServer = server;
+        if (res) res(server);
+      });
+      server.on('error', (err) => {
+        console.error(`端口 ${port} 启动失败:`, err.message);
+        if (rej) rej(err);
+      });
+    }
+
+    const oldServer = app.locals.httpServer;
+    if (oldServer) {
+      oldServer.close((err) => {
+        if (err) {
+          console.error('关闭端口失败:', err);
+          return reject(err);
+        }
+        console.log('原端口已关闭');
+        listen(newPort, resolve, reject);
+      });
+    } else {
+      listen(newPort, resolve, reject);
+    }
+  });
+};
 
 // Middleware
 app.use(cors());
@@ -46,11 +77,10 @@ async function start() {
     loadConfig();
     initDb();
     startCleanup();
-    app.listen(PORT, () => {
-      console.log(`文件传输服务已启动: http://localhost:${PORT}`);
-      console.log(`存储路径: ${getConfig('storagePath')}`);
-      console.log(`文件保留时长: ${getConfig('retentionHours')} 小时`);
-    });
+    const PORT = getConfig('port') || process.env.PORT || 3000;
+    await app.locals.restartServer(PORT);
+    console.log(`存储路径: ${getConfig('storagePath')}`);
+    console.log(`文件保留时长: ${getConfig('retentionHours')} 小时`);
   } catch (err) {
     console.error('启动失败:', err);
     process.exit(1);

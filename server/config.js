@@ -6,17 +6,8 @@ const CONFIG_PATH = path.join(__dirname, '..', 'config.json');
 
 let config = {};
 
-function getDefaultStoragePath() {
-  if (os.platform() === 'win32') {
-    // Try D: drive first, then C:, then E:, etc.
-    const drives = ['D:', 'E:', 'F:', 'G:', 'C:'];
-    for (const drive of drives) {
-      if (fs.existsSync(drive + '\\')) {
-        return path.join(drive, 'FileTransmit', 'file');
-      }
-    }
-  }
-  return '/var/usr/FileTransmit/file';
+function getDefaultStoragePath() { 
+  return 'files';
 }
 
 function loadConfig() {
@@ -27,6 +18,7 @@ function loadConfig() {
   }
 
   // Set defaults
+  if (!config.port) config.port = 3000;
   if (!config.storagePath || config.storagePath === '') {
     config.storagePath = getDefaultStoragePath();
   }
