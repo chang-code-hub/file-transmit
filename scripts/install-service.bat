@@ -80,6 +80,20 @@ pause
 exit /b 1
 
 :nssm_found
+:: Re-check path after installation (which may have updated PATH in registry,
+:: but the current cmd session still has stale cached PATH)
+if not defined NSSM_PATH (
+    where nssm >nul 2>&1 && (
+        for /f "delims=" %%i in ('where nssm') do set "NSSM_PATH=%%i"
+    )
+)
+if not defined NSSM_PATH (
+    echo [Error] nssm path not resolved. Try placing nssm.exe in scripts\ folder.
+    pause
+    exit /b 1
+)
+echo [Info] Using nssm: %NSSM_PATH%
+echo.
 
 :: ============================================
 :: Get paths
