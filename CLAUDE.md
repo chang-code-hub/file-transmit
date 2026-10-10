@@ -63,7 +63,7 @@ file-transmit/
 ### Key Design Decisions
 
 - **HashRouter** (not BrowserRouter) — avoids server-side fallback complexity for SPA routing
-- **DuckDB** (`duckdb@1.2.1`) — callback API; `server/db.js` wraps it in Promises. Params are spread as varargs (`db.all(sql, ...values, cb)`), not passed as an array. Single-writer: one process per `data.duckdb` file. BIGINT comes back as BigInt and is normalized to `number` inside `db.js`. `Statement#get` is not implemented in this binding — single-row reads use `all` + first row. `DUCKDB_PATH` env var overrides the db file path (used for isolated tests).
+- **DuckDB** (`@duckdb/node-api@1.2.2-alpha.19`) — async API; `server/db.js` exposes Promise-based helpers. In this version the connection-level shortcuts (`conn.run(sql, values)` / `conn.runAndReadAll(sql, values)`) hang when passed a `values` array, so every query goes through `prepare(sql)` + `bind(values)` + `run()`/`runAndReadAll()`. `bind` infers the type from the JS value: plain `number` binds as 32-bit INTEGER and overflows millisecond timestamps, so `db.js` coerces integers to `bigint` before binding (`toBindValue`). BIGINT reads back as `BigInt` and is normalized to `number`. `DUCKDB_PATH` env var overrides the db file path (isolated tests). Single-writer: one process per `data.duckdb`.
 - **File storage**: each upload gets a folder named by its 8-char ID under `config.storagePath`
 - **Settings** are dual-stored: `config.json` on disk + `settings` table in SQLite (config.json is the source of truth, loaded at startup)
 - **No authentication framework** — admin auth is a simple password header check; user identity is a permanent UUID cookie
