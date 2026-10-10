@@ -45,6 +45,15 @@ router.put('/settings', adminAuth, (req, res) => {
     'downloadProxy',
   ];
 
+  const updates = {};
+
+  for (const key of allowedKeys) {
+    if (key === 'downloadProxy') continue;
+    if (req.body[key] !== undefined) {
+      updates[key] = req.body[key];
+    }
+  }
+
   // Download proxy: normalize and validate before persisting
   if (req.body.downloadProxy !== undefined) {
     const raw = req.body.downloadProxy || {};
@@ -56,14 +65,6 @@ router.put('/settings', adminAuth, (req, res) => {
     }
 
     updates.downloadProxy = { enabled, baseUrl };
-  }
-
-  const updates = {};
-  for (const key of allowedKeys) {
-    if (key === 'downloadProxy') continue;
-    if (req.body[key] !== undefined) {
-      updates[key] = req.body[key];
-    }
   }
 
   // Handle password change separately
