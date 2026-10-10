@@ -63,7 +63,7 @@ file-transmit/
 ### Key Design Decisions
 
 - **HashRouter** (not BrowserRouter) — avoids server-side fallback complexity for SPA routing
-- **DuckDB** (`@duckdb/node-api`) — async API; `server/db.js` exposes Promise-based helpers. Single-writer: only one `DuckDBInstance` per `data.duckdb`. BIGINT/TIMESTAMP columns come back as BigInt/DuckDBTimestampValue and are normalized to `number` (ms) inside `db.js`.
+- **DuckDB** (`duckdb@1.2.1`) — callback API; `server/db.js` wraps it in Promises. Params are spread as varargs (`db.all(sql, ...values, cb)`), not passed as an array. Single-writer: one process per `data.duckdb` file. BIGINT comes back as BigInt and is normalized to `number` inside `db.js`. `Statement#get` is not implemented in this binding — single-row reads use `all` + first row. `DUCKDB_PATH` env var overrides the db file path (used for isolated tests).
 - **File storage**: each upload gets a folder named by its 8-char ID under `config.storagePath`
 - **Settings** are dual-stored: `config.json` on disk + `settings` table in SQLite (config.json is the source of truth, loaded at startup)
 - **No authentication framework** — admin auth is a simple password header check; user identity is a permanent UUID cookie
