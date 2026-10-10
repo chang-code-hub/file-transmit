@@ -38,7 +38,7 @@ file-transmit/
 │   ├── routes/
 │   │   ├── admin.js          # POST /api/admin/login, GET/PUT /api/admin/settings, GET /api/admin/stats
 │   │   ├── upload.js         # POST /api/upload/files (multer), GET /api/upload/history, GET /api/upload/validate-ids
-│   │   └── download.js       # GET /api/download/:fileId (detail), GET /api/download/:fileId/:fileName (download)
+│   │   └── download.js       # GET /api/download/:fileId (detail), GET /api/download/:fileId/:fileName (download; optional 下载代理 redirect)
 │   ├── services/
 │   │   ├── cleanup.js        # setInterval (30min): deletes expired files+folders+DB records, removes empty dirs
 │   │   └── archiveCheck.js   # Archive inspection + virus detection: encrypted detection, recursive 7z extraction, count-wait-recompare

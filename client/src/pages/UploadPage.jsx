@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from 'react';
 import HistoryButton, { addToHistory } from '../components/HistoryButton';
 import FileDetailModal from '../components/FileDetailModal';
+import TextFileModal from '../components/TextFileModal';
 
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB, must match server
 
@@ -14,6 +15,7 @@ export default function UploadPage() {
   const [selectedHistoryId, setSelectedHistoryId] = useState(null);
   const [copied, setCopied] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
+  const [textModal, setTextModal] = useState(null); // null | { index?: number, name, content }
 
   // Progress state
   const [fileProgress, setFileProgress] = useState([]);
@@ -21,6 +23,19 @@ export default function UploadPage() {
 
   const fileInputRef = useRef(null);
   const abortRef = useRef(null);
+  // 文本文件自动编号计数器（file_1.txt、file_2.txt …）
+  const textSeqRef = useRef(0);
+
+  /** 取下一个可用的 file_{n}.txt 名称，避开当前列表中已存在的名字 */
+  const nextTextName = () => {
+    const used = new Set(files.map(f => f.displayName));
+    let name;
+    do {
+      textSeqRef.current += 1;
+      name = `file_${textSeqRef.current}.txt`;
+    } while (used.has(name));
+    return name;
+  };
 
   const handleFiles = useCallback((newFiles) => {
     const fileList = Array.from(newFiles);
@@ -50,6 +65,46 @@ export default function UploadPage() {
     setDragOver(false);
     handleFiles(e.dataTransfer.files);
   }, [handleFiles]);
+
+  /** 将新建的文本文件加入待上传列表 */
+  const handleAddTextFile = useCallback(({ file, displayName }) => {
+    setFiles(prev => {
+      const updated = [...prev];
+      let name = displayName;
+      let counter = 1;
+      while (updated.some(existing => existing.displayName === name)) {
+        const dotIdx = displayName.lastIndexOf('.');
+        if (dotIdx > 0) {
+          name = displayName.slice(0, dotIdx) + ` (${counter})` + displayName.slice(dotIdx);
+        } else {
+          name = displayName + ` (${counter})`;
+        }
+        counter++;
+      }
+      updated.push({ file, displayName: name, isText: true });
+      return updated;
+    });
+    setError('');
+  }, []);
+
+  /** 重新编辑已添加的文本文件 */
+  const handleEditTextFile = (index) => {
+    const item = files[index];
+    if (!item?.isText) return;
+    // File#text 异步读出内容后再打开弹窗
+    item.file.text().then(content => {
+      setTextModal({ index, name: item.displayName, content });
+    });
+  };
+
+  /** 更新已有文本文件（编辑） */
+  const handleUpdateTextFile = useCallback(({ index, file, displayName }) => {
+    setFiles(list => list.map((item, i) =>
+      i === index ? { file, displayName, isText: true } : item
+    ));
+    setTextModal(null);
+    setError('');
+  }, []);
 
   const handleRemove = (index) => {
     setFiles(prev => prev.filter((_, i) => i !== index));
@@ -406,6 +461,15 @@ export default function UploadPage() {
               <div style={{ fontSize: 40, marginBottom: 10 }}>📁</div>
               <div style={{ fontSize: 15, color: '#666' }}>拖拽文件到此处上传</div>
               <div style={{ fontSize: 13, color: '#999', marginTop: 4 }}>或点击选择文件（支持多选）</div>
+              <div style={{ marginTop: 14 }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-small"
+                  onClick={(e) => { e.stopPropagation(); setTextModal({ name: nextTextName(), content: '' }); }}
+                >
+                  📝 新建文本文件
+                </button>
+              </div>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -423,7 +487,7 @@ export default function UploadPage() {
                 已选择 {files.length} 个文件
               </h3>
               <div style={{ border: '1px solid #eee', borderRadius: 8, overflow: 'hidden' }}>
-                {files.map(({ file, displayName }, i) => (
+                {files.map(({ file, displayName, isText }, i) => (
                   <div
                     key={i}
                     style={{
@@ -436,14 +500,23 @@ export default function UploadPage() {
                     }}
                   >
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-                      📎 {displayName}
-                      {displayName !== file.name && (
+                      {isText ? '📝' : '📎'} {displayName}
+                      {!isText && displayName !== file.name && (
                         <span style={{ color: '#999', fontSize: 11, marginLeft: 6 }}>
                           (原名: {file.name})
                         </span>
                       )}
                     </span>
                     <span style={{ color: '#999', margin: '0 12px', flexShrink: 0 }}>{formatSize(file.size)}</span>
+                    {isText && (
+                      <button
+                        className="btn btn-small btn-secondary"
+                        style={{ marginRight: 8 }}
+                        onClick={(e) => { e.stopPropagation(); handleEditTextFile(i); }}
+                      >
+                        编辑
+                      </button>
+                    )}
                     <button
                       className="btn btn-small btn-danger"
                       onClick={(e) => { e.stopPropagation(); handleRemove(i); }}
@@ -549,14 +622,23 @@ export default function UploadPage() {
           )}
 
           {!uploading && (
-            <button
-              className="btn btn-primary"
-              onClick={handleUpload}
-              disabled={files.length === 0}
-              style={{ width: '100%', padding: '14px', fontSize: 16 }}
-            >
-              上传 {files.length > 0 ? `(${files.length} 个文件)` : ''}
-            </button>
+            <>
+              <button
+                className="btn btn-primary"
+                onClick={handleUpload}
+                disabled={files.length === 0}
+                style={{ width: '100%', padding: '14px', fontSize: 16 }}
+              >
+                上传 {files.length > 0 ? `(${files.length} 个文件)` : ''}
+              </button>
+              <button
+                className="btn btn-secondary"
+                style={{ width: '100%', padding: '10px', marginTop: 10, fontSize: 14 }}
+                onClick={() => setTextModal({ name: nextTextName(), content: '' })}
+              >
+                📝 新建文本文件
+              </button>
+            </>
           )}
         </>
       )}
@@ -565,6 +647,16 @@ export default function UploadPage() {
         <FileDetailModal
           fileId={selectedHistoryId}
           onClose={() => setSelectedHistoryId(null)}
+        />
+      )}
+
+      {textModal && (
+        <TextFileModal
+          index={textModal.index ?? null}
+          initialName={textModal.name || ''}
+          initialContent={textModal.content || ''}
+          onSave={textModal.index == null ? handleAddTextFile : handleUpdateTextFile}
+          onClose={() => setTextModal(null)}
         />
       )}
     </div>

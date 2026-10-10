@@ -107,5 +107,9 @@
   },
   "sevenZipPath": "C:\\Program Files\\7-Zip\\7z.exe",
   "enableVirusDetect": true,
-  "virusDetectWaitSeconds": 30
+  "virusDetectWaitSeconds": 30,
+  "downloadProxy": {
+    "enabled": false,
+    "baseUrl": ""
+  }
 }

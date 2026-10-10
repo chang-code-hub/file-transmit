@@ -5,9 +5,27 @@ const fs = require('fs');
 const { getFileById } = require('../db');
 const logger = require('../utils/logger');
 const ipFilter = require('../middleware/ipFilter');
+const { getConfig, normalizeProxyBaseUrl, isDownloadProxyEnabled } = require('../config');
 
 // Apply IP filter
 router.use(ipFilter('download'));
+
+/**
+ * Build the download URL for one file under a download ID.
+ * When 下载代理 is enabled the path is rewritten to the configured
+ * external prefix (e.g. http://nexusoss.org/repository/download/),
+ * otherwise the local /api/download/ endpoint is used.
+ */
+function buildDownloadUrl(fileId, fileName) {
+  const base = normalizeProxyBaseUrl(getConfig('downloadProxy')?.baseUrl);
+  const encodedFileId = encodeURIComponent(fileId);
+  const encodedFileName = encodeURIComponent(fileName);
+
+  if (isDownloadProxyEnabled() && base) {
+    return `${base}/${encodedFileId}/${encodedFileName}`;
+  }
+  return `/api/download/${encodedFileId}/${encodedFileName}`;
+}
 
 // Get file detail by ID
 router.get('/:fileId', (req, res) => {
@@ -41,15 +59,34 @@ router.get('/:fileId', (req, res) => {
     expiresAt: file.expires_at,
     uploaderIp: file.uploader_ip,
     userAgent: file.uploader_ua,
+    downloadProxyEnabled: isDownloadProxyEnabled(),
     files: file.records.map(r => ({
       id: r.id,
       originalName: r.original_name,
       storedName: r.stored_name,
       size: r.size,
       mimeType: r.mime_type,
+      downloadUrl: buildDownloadUrl(file.id, r.stored_name),
     })),
   });
 });
+
+/**
+ * Build the download URL for one file under a download ID.
+ * When 下载代理 is enabled the path is rewritten to the configured
+ * external prefix (e.g. http://nexusoss.org/repository/download/),
+ * otherwise the local /api/download/ endpoint is used.
+ */
+function buildDownloadUrl(fileId, fileName) {
+  const base = normalizeProxyBaseUrl(getConfig('downloadProxy')?.baseUrl);
+  const encodedFileId = encodeURIComponent(fileId);
+  const encodedFileName = encodeURIComponent(fileName);
+
+  if (isDownloadProxyEnabled() && base) {
+    return `${base}/${encodedFileId}/${encodedFileName}`;
+  }
+  return `/api/download/${encodedFileId}/${encodedFileName}`;
+}
 
 // Download a specific file
 router.get('/:fileId/:fileName', (req, res) => {
@@ -85,7 +122,15 @@ router.get('/:fileId/:fileName', (req, res) => {
   const sizeMB = (record.size / 1024 / 1024).toFixed(1);
   logger.log(`[下载] 开始下载: ID=${fileId}, 文件="${record.original_name}", 大小=${sizeMB}MB, IP=${clientIp}`);
 
+  // 下载代理：将 /api/download/:id/:name 重定向到外部代理路径
+  if (isDownloadProxyEnabled()) {
+    const target = buildDownloadUrl(fileId, record.stored_name);
+    logger.log(`[下载] 代理转发: ID=${fileId}, 文件="${record.original_name}", 目标=${target}`);
+    return res.redirect(302, target);
+  }
+
   res.download(filePath, record.original_name);
 });
 
 module.exports = router;
+module.exports.buildDownloadUrl = buildDownloadUrl;

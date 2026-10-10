@@ -40,6 +40,11 @@ function loadConfig() {
   if (config.recursiveArchiveCheck === undefined) config.recursiveArchiveCheck = false;
   if (config.sevenZipPath === undefined) config.sevenZipPath = '';
   if (config.enableVirusDetect === undefined) config.enableVirusDetect = false;
+  if (!config.downloadProxy || typeof config.downloadProxy !== 'object') {
+    config.downloadProxy = {};
+  }
+  if (config.downloadProxy.enabled === undefined) config.downloadProxy.enabled = false;
+  if (!config.downloadProxy.baseUrl) config.downloadProxy.baseUrl = '';
   if (!config.ipFilter) {
     config.ipFilter = {
       upload: { enabled: false, mode: 'allow', list: [] },
@@ -64,6 +69,41 @@ function getConfig(key) {
   return config;
 }
 
+/**
+ * Normalize a download-proxy base URL.
+ * - trims whitespace
+ * - returns '' when empty or invalid
+ * - keeps scheme + host + pathname, drops query/hash
+ * - ensures exactly one '/' between path and the appended fileId/fileName
+ */
+function normalizeProxyBaseUrl(raw) {
+  if (typeof raw !== 'string') return '';
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+
+  let url;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return '';
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+
+  // Drop query/hash — only the path prefix matters for prefixing downloads
+  url.search = '';
+  url.hash = '';
+
+  // Collapse trailing slashes so callers can safely append '/id/name'
+  const base = url.toString().replace(/\/+$/, '');
+  return base;
+}
+
+/** Is the download proxy currently active? */
+function isDownloadProxyEnabled() {
+  return !!(config.downloadProxy && config.downloadProxy.enabled
+    && normalizeProxyBaseUrl(config.downloadProxy.baseUrl));
+}
+
 function updateConfig(updates) {
   // Don't overwrite adminPassword with empty
   if (updates.adminPassword === '' || updates.adminPassword === undefined) {
@@ -74,4 +114,11 @@ function updateConfig(updates) {
   return config;
 }
 
-module.exports = { loadConfig, saveConfig, getConfig, updateConfig };
+module.exports = {
+  loadConfig,
+  saveConfig,
+  getConfig,
+  updateConfig,
+  normalizeProxyBaseUrl,
+  isDownloadProxyEnabled,
+};
