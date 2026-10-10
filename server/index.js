@@ -2,7 +2,7 @@ const express = require('express');
 const path = require('path');
 const cookieParser = require('cookie-parser');
 const cors = require('cors');
-const { initDb } = require('./db');
+const { initDb, closeDb } = require('./db');
 const { loadConfig, getConfig } = require('./config');
 const userIdMiddleware = require('./middleware/userId');
 const logger = require('./utils/logger');
@@ -79,7 +79,7 @@ app.get('*', (req, res) => {
 async function start() {
   try {
     loadConfig();
-    initDb();
+    await initDb();
     startCleanup();
     const PORT = getConfig('port') || process.env.PORT || 3000;
     await app.locals.restartServer(PORT);
@@ -92,3 +92,15 @@ async function start() {
 }
 
 start();
+
+// Ensure DuckDB data is flushed on exit
+process.on('SIGINT', async () => {
+  logger.log('收到 SIGINT，正在关闭数据库...');
+  await closeDb();
+  process.exit(0);
+});
+process.on('SIGTERM', async () => {
+  logger.log('收到 SIGTERM，正在关闭数据库...');
+  await closeDb();
+  process.exit(0);
+});

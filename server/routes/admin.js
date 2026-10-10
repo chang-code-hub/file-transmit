@@ -3,7 +3,7 @@ const router = express.Router();
 const adminAuth = require('../middleware/auth');
 const logger = require('../utils/logger');
 const { runCleanup } = require('../services/cleanup');
-const { getConfig, updateConfig } = require('../config');
+const { getConfig, updateConfig, normalizeProxyBaseUrl } = require('../config');
 const { getStats } = require('../db');
 
 // Login - verify admin password
@@ -42,10 +42,25 @@ router.put('/settings', adminAuth, (req, res) => {
     'sevenZipPath',
     'enableVirusDetect',
     'ipFilter',
+    'downloadProxy',
   ];
+
+  // Download proxy: normalize and validate before persisting
+  if (req.body.downloadProxy !== undefined) {
+    const raw = req.body.downloadProxy || {};
+    const baseUrl = normalizeProxyBaseUrl(raw.baseUrl);
+    const enabled = !!raw.enabled;
+
+    if (enabled && !baseUrl) {
+      return res.status(400).json({ error: '下载代理地址无效，需为 http(s):// 开头的合法 URL' });
+    }
+
+    updates.downloadProxy = { enabled, baseUrl };
+  }
 
   const updates = {};
   for (const key of allowedKeys) {
+    if (key === 'downloadProxy') continue;
     if (req.body[key] !== undefined) {
       updates[key] = req.body[key];
     }
@@ -85,8 +100,8 @@ router.put('/settings', adminAuth, (req, res) => {
 });
 
 // Get stats (requires auth)
-router.get('/stats', adminAuth, (req, res) => {
-  const stats = getStats();
+router.get('/stats', adminAuth, async (req, res) => {
+  const stats = await getStats();
   const config = getConfig();
   res.json({
     ...stats,

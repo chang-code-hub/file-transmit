@@ -34,13 +34,13 @@ function removeEmptyDirs(dirPath) {
   }
 }
 
-function runCleanup() {
+async function runCleanup() {
   try {
     logger.log('[清理] 开始执行清理任务...');
     const now = Date.now();
 
     // 1. Delete expired DB records + their folders
-    const expired = deleteExpiredFiles(now);
+    const expired = await deleteExpiredFiles(now);
     logger.log(`[清理] 删除 ${expired.length} 条过期记录`);
 
     for (const file of expired) {
@@ -55,8 +55,8 @@ function runCleanup() {
     }
 
     // 2. Check file_records: if the stored file was deleted from disk, clean up the DB record
-    const allFiles = getAllFiles();
-    const allRecords = getAllFileRecords();
+    const allFiles = await getAllFiles();
+    const allRecords = await getAllFileRecords();
     const fileMap = new Map(allFiles.map(f => [f.id, f]));
 
     let orphanRecords = 0;
@@ -66,7 +66,7 @@ function runCleanup() {
 
       const filePath = path.join(fileEntry.folder_path, record.stored_name);
       if (!fs.existsSync(filePath)) {
-        deleteFileRecordById(record.id);
+        await deleteFileRecordById(record.id);
         orphanRecords++;
         logger.log(`[清理] 删除孤立文件记录: ${filePath}`);
       }
@@ -81,7 +81,7 @@ function runCleanup() {
     for (const file of allFiles) {
       const folderExists = fs.existsSync(file.folder_path);
       if (!folderExists) {
-        deleteFileById(file.id);
+        await deleteFileById(file.id);
         removedFiles++;
         logger.log(`[清理] 删除不存在文件夹的数据库记录: ${file.folder_path}`);
         continue;
@@ -95,7 +95,7 @@ function runCleanup() {
           removedEmptyDirs++;
           logger.log(`[清理] 删除空文件夹: ${file.folder_path}`);
           // Also remove the DB record since the folder is gone
-          deleteFileById(file.id);
+          await deleteFileById(file.id);
           removedFiles++;
         }
       } catch (err) {
@@ -123,10 +123,12 @@ function runCleanup() {
 
 function startCleanup() {
   // Run immediately on startup
-  runCleanup();
+  runCleanup().catch(err => logger.error('[清理] 启动清理任务失败:', err.message));
 
   // Schedule periodic cleanup
-  setInterval(runCleanup, CLEANUP_INTERVAL);
+  setInterval(() => {
+    runCleanup().catch(err => logger.error('[清理] 定时清理任务失败:', err.message));
+  }, CLEANUP_INTERVAL);
   logger.log(`[清理] 定时清理已启动，间隔 ${CLEANUP_INTERVAL / 60000} 分钟`);
 }
 

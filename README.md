@@ -29,6 +29,7 @@
 - 输入文件 ID 查看文件详情
 - 详情弹窗展示描述、上传者信息（IP、时间、浏览器等）及文件清单
 - 点击文件名直接下载
+- 可配置下载代理，将下载转发到外部地址前缀
 
 ## 技术栈
 
@@ -36,7 +37,7 @@
 |------|------|
 | 前端 | React (Vite 构建) |
 | 后端 | Node.js + Express |
-| 数据库 | better-sqlite3 |
+| 数据库 | DuckDB |
 | 平台 | Windows / Linux |
 
 ## 快速开始
@@ -148,6 +149,18 @@ scripts\uninstall-service.bat  # 卸载服务
 - **存储路径**：文件在服务器上的存放目录，支持相对路径和绝对路径
 - **保留时长**：文件上传后保留的小时数，超时自动清理（每 30 分钟执行一次清理任务）
 
+#### 下载代理
+
+下载接口支持转发到外部下载代理（例如公司内的制品库 / 静态资源服务）：
+
+- **代理地址前缀**：下载请求 `/api/download/:fileId/:fileName` 会转发到
+  `{代理地址}/{fileId}/{fileName}`，例如设定 `http://nexusoss.org/repository/download/`
+  后，下载 `454XVG8L/file_1.txt` 会跳转到
+  `http://nexusoss.org/repository/download/454XVG8L/file_1.txt`
+- **启用开关**：关闭后仍走本地 `/api/download/` 直接下发文件；地址留空时即使勾选启用也不生效
+- **仍由本服务校验**：文件 ID、保留时长、文件存在性校验与 IP 过滤仍在本服务完成，
+  代理只负责最终的文件内容分发，代理端需按相同路径提供文件
+
 ## 配置说明
 
 首次启动后会在项目根目录自动生成 `config.json`，主要配置项：
@@ -172,6 +185,7 @@ scripts\uninstall-service.bat  # 卸载服务
   "recursiveArchiveCheck": true,
   "enableVirusDetect": false,
   "sevenZipPath": "C:\\Program Files\\7-Zip\\7z.exe",
+  "downloadProxy": { "enabled": false, "baseUrl": "" },
   "ipFilter": {
     "upload": { "enabled": false, "mode": "deny", "list": [] },
     "download": { "enabled": false, "mode": "allow", "list": [] }
@@ -214,6 +228,7 @@ file-transmit/
 │           └── HistoryButton.jsx   # 上传历史按钮
 ├── config.json              # 运行时配置文件
 ├── screenshots/             # 截图文档
+├── data.duckdb             # DuckDB 数据库文件
 └── scripts/                 # 启动与服务管理脚本
 ```
 

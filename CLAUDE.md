@@ -30,7 +30,7 @@ file-transmit/
 ├── server/
 │   ├── index.js              # Express entry: middleware stack, API mount, static file serve, startup
 │   ├── config.js             # Reads/writes config.json, sets defaults, creates storage dir
-│   ├── db.js                 # better-sqlite3: schema init (files, file_records, settings tables), all queries
+│   ├── db.js                 # DuckDB: schema init (files, file_records, settings tables), all queries (async)
 │   ├── middleware/
 │   │   ├── userId.js         # Sets permanent cookie `file_transmit_uid` (UUID v4, 1yr expiry) on first visit
 │   │   ├── ipFilter.js       # Factory fn(mode): checks client IP against config.ipFilter[mode] allowlist/blocklist
@@ -38,7 +38,7 @@ file-transmit/
 │   ├── routes/
 │   │   ├── admin.js          # POST /api/admin/login, GET/PUT /api/admin/settings, GET /api/admin/stats
 │   │   ├── upload.js         # POST /api/upload/files (multer), GET /api/upload/history, GET /api/upload/validate-ids
-│   │   └── download.js       # GET /api/download/:fileId (detail), GET /api/download/:fileId/:fileName (download)
+│   │   └── download.js       # GET /api/download/:fileId (detail), GET /api/download/:fileId/:fileName (download; optional 下载代理 redirect)
 │   ├── services/
 │   │   ├── cleanup.js        # setInterval (30min): deletes expired files+folders+DB records, removes empty dirs
 │   │   └── archiveCheck.js   # Archive inspection + virus detection: encrypted detection, recursive 7z extraction, count-wait-recompare
@@ -63,7 +63,7 @@ file-transmit/
 ### Key Design Decisions
 
 - **HashRouter** (not BrowserRouter) — avoids server-side fallback complexity for SPA routing
-- **better-sqlite3** — synchronous API, no connection pool needed for single-server use
+- **DuckDB** (`@duckdb/node-api`) — async API; `server/db.js` exposes Promise-based helpers. Single-writer: only one `DuckDBInstance` per `data.duckdb`. BIGINT/TIMESTAMP columns come back as BigInt/DuckDBTimestampValue and are normalized to `number` (ms) inside `db.js`.
 - **File storage**: each upload gets a folder named by its 8-char ID under `config.storagePath`
 - **Settings** are dual-stored: `config.json` on disk + `settings` table in SQLite (config.json is the source of truth, loaded at startup)
 - **No authentication framework** — admin auth is a simple password header check; user identity is a permanent UUID cookie

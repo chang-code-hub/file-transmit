@@ -103,8 +103,10 @@ export default function FileDetailModal({ fileId, onClose }) {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
                       <span style={{ fontSize: 12, color: '#999' }}>{formatSize(f.size)}</span>
                       <a
-                        href={`/api/download/${data.id}/${encodeURIComponent(f.storedName)}`}
+                        href={f.downloadUrl || `/api/download/${data.id}/${encodeURIComponent(f.storedName)}`}
                         className="btn btn-primary btn-small"
+                        target={f.downloadUrl?.startsWith('http') ? '_blank' : undefined}
+                        rel={f.downloadUrl?.startsWith('http') ? 'noopener noreferrer' : undefined}
                         download
                       >
                         下载

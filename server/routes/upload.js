@@ -350,7 +350,7 @@ router.post('/complete', async (req, res) => {
     const clientIp = req.ip || req.connection.remoteAddress || '';
     const ip = clientIp.replace(/^::ffff:/, '');
 
-    createFile({
+    await createFile({
       id: fileId,
       folderPath,
       description: manifest.description,
@@ -361,7 +361,7 @@ router.post('/complete', async (req, res) => {
     });
 
     for (const f of assembledFiles) {
-      addFileRecord({
+      await addFileRecord({
         fileId,
         originalName: f.originalName,
         storedName: f.storedName,
@@ -405,8 +405,8 @@ router.post('/complete', async (req, res) => {
 });
 
 // Get user's upload history
-router.get('/history', (req, res) => {
-  const files = getFilesByUserId(req.userId);
+router.get('/history', async (req, res) => {
+  const files = await getFilesByUserId(req.userId);
   res.json(files.map(f => ({
     id: f.id,
     description: f.description,
@@ -422,12 +422,12 @@ router.get('/history', (req, res) => {
 });
 
 // Validate which file IDs still exist (for localStorage cleanup)
-router.get('/validate-ids', (req, res) => {
+router.get('/validate-ids', async (req, res) => {
   const idsParam = req.query.ids;
   if (!idsParam) return res.json({ validIds: [] });
 
   const ids = idsParam.split(',').map(s => s.trim()).filter(Boolean);
-  const validIds = validateFileIds(ids);
+  const validIds = await validateFileIds(ids);
   res.json({ validIds });
 });
 

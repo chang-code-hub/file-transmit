@@ -185,6 +185,16 @@ export default function AdminPage() {
     }));
   };
 
+  const updateDownloadProxy = (field, value) => {
+    setSettings(prev => ({
+      ...prev,
+      downloadProxy: {
+        ...(prev.downloadProxy || {}),
+        [field]: value,
+      },
+    }));
+  };
+
   // Not logged in: show inline login form
   if (!password) {
     return (
@@ -455,7 +465,41 @@ export default function AdminPage() {
             </div>
             <div className="hint" style={{ marginTop: 4, marginBottom: 12 }}>
               上传后自动解压压缩包到临时目录，等待后对比文件数量——若文件数减少，则说明杀毒软件删除了可疑文件，上传将被拒绝。依赖 7z 和系统杀毒软件。
-            </div> 
+            </div>
+
+            <hr style={{ margin: '20px 0', border: 'none', borderTop: '1px solid #e0e0e0' }} />
+
+            <h3 style={{ fontSize: 14, marginBottom: 10, color: '#555' }}>下载代理</h3>
+            <div className="form-group" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <input
+                type="checkbox"
+                checked={settings.downloadProxy?.enabled || false}
+                onChange={e => updateDownloadProxy('enabled', e.target.checked)}
+                id="downloadProxyEnabled"
+              />
+              <label htmlFor="downloadProxyEnabled" style={{ margin: 0 }}>启用下载代理转发</label>
+            </div>
+            <div className="form-group">
+              <label>代理地址前缀</label>
+              <input
+                type="text"
+                value={settings.downloadProxy?.baseUrl || ''}
+                onChange={e => updateDownloadProxy('baseUrl', e.target.value)}
+                placeholder="http://nexusoss.org/repository/download/"
+                disabled={!settings.downloadProxy?.enabled}
+              />
+              <div className="hint">
+                下载请求 <code>/api/download/:fileId/:fileName</code> 将转发到该前缀下的
+                <code>{' {代理地址}/{fileId}/{fileName}'}</code>，例如
+                <code>http://nexusoss.org/repository/download/454XVG8L/file_1.txt</code>。
+                保留时长与文件校验仍由本服务负责，代理仅负责文件内容分发。留空则始终走本地下载。
+              </div>
+            </div>
+            {settings.downloadProxy?.enabled && settings.downloadProxy?.baseUrl && (
+              <div className="hint" style={{ marginBottom: 12 }}>
+                预览：<code>{`${(settings.downloadProxy.baseUrl || '').replace(/\/+$/, '')}/{fileId}/{fileName}`}</code>
+              </div>
+            )}
 
           </section>
         )}

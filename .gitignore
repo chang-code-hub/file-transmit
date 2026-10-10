@@ -11,3 +11,5 @@ logs/
 scripts/nssm.exe
 files/
 test-virus/
+data.duckdb.wal
+data.duckdb
