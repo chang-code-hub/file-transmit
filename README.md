@@ -29,7 +29,7 @@
 - 输入文件 ID 查看文件详情
 - 详情弹窗展示描述、上传者信息（IP、时间、浏览器等）及文件清单
 - 点击文件名直接下载
-- 可配置下载代理，将下载转发到外部地址前缀
+- 可配置代理转发，`/api/upload` 与 `/api/download` 转发到远程代理服务
 
 ## 技术栈
 
@@ -149,17 +149,27 @@ scripts\uninstall-service.bat  # 卸载服务
 - **存储路径**：文件在服务器上的存放目录，支持相对路径和绝对路径
 - **保留时长**：文件上传后保留的小时数，超时自动清理（每 30 分钟执行一次清理任务）
 
-#### 下载代理
+#### 代理转发
 
-下载接口支持转发到外部下载代理（例如公司内的制品库 / 静态资源服务）：
+启用后上传与下载**不再查本地数据库、不读本地文件**，而是原样转发到远程代理服务。
+管理接口始终走本机。
 
-- **代理地址前缀**：下载请求 `/api/download/:fileId/:fileName` 会转发到
-  `{代理地址}/{fileId}/{fileName}`，例如设定 `http://nexusoss.org/repository/download/`
-  后，下载 `454XVG8L/file_1.txt` 会跳转到
-  `http://nexusoss.org/repository/download/454XVG8L/file_1.txt`
-- **启用开关**：关闭后仍走本地 `/api/download/` 直接下发文件；地址留空时即使勾选启用也不生效
-- **仍由本服务校验**：文件 ID、保留时长、文件存在性校验与 IP 过滤仍在本服务完成，
-  代理只负责最终的文件内容分发，代理端需按相同路径提供文件
+拓扑：
+
+```
+浏览器 -> 本服务 /api  ->  远程代理服务 /api  ->  存储 / 数据库
+```
+
+- **代理服务地址**：填到 `/api` 的**上一层**，转发时自动补 `/api` + 原始路径。
+  例如填 `http://nexusoss.org/repository`，则
+  `/api/upload/history` → `http://nexusoss.org/repository/api/upload/history`
+- **走代理的接口**：`/api/upload/*`（含 init / chunk / complete / history / validate-ids）、
+  `/api/download/*`（详情与文件下载），请求体（含 multipart 分块）原样透传
+- **始终走本机**：`/api/admin/*`（管理设置）、`/api/access-status` 等
+- **透传内容**：方法、路径、query string、请求头、请求体、响应状态码、响应头（含 `set-cookie`）、响应体
+- **追加头**：`X-Forwarded-For` / `X-Forwarded-Proto` / `X-Forwarded-Host`，供上游识别真实来源
+- **上游不可用**：返回 `502 代理服务不可用`
+- **关闭或留空**：走本机实现（本地 DuckDB + 本地文件存储）
 
 ## 配置说明
 

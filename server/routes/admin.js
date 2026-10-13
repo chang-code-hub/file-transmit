@@ -54,14 +54,14 @@ router.put('/settings', adminAuth, (req, res) => {
     }
   }
 
-  // Download proxy: normalize and validate before persisting
+  // 代理转发: normalize and validate before persisting
   if (req.body.downloadProxy !== undefined) {
     const raw = req.body.downloadProxy || {};
     const baseUrl = normalizeProxyBaseUrl(raw.baseUrl);
     const enabled = !!raw.enabled;
 
     if (enabled && !baseUrl) {
-      return res.status(400).json({ error: '下载代理地址无效，需为 http(s):// 开头的合法 URL' });
+      return res.status(400).json({ error: '代理地址无效，需为 http(s):// 开头的合法 URL' });
     }
 
     updates.downloadProxy = { enabled, baseUrl };

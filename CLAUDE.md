@@ -62,6 +62,7 @@ file-transmit/
 
 ### Key Design Decisions
 
+- **DownloadProxy (config.downloadProxy)** — when `enabled` with a valid `baseUrl`, `middleware/proxy.js` (mounted before body parsers) forwards `/api/upload/*` and `/api/download/*` to `{baseUrl}/api/...`, request body included (multipart chunks stream through). `/api/admin/*` and `/api/access-status` always stay local. `baseUrl` is the layer *above* `/api` (e.g. `http://host/repository`).
 - **HashRouter** (not BrowserRouter) — avoids server-side fallback complexity for SPA routing
 - **DuckDB** (`@duckdb/node-api`) — async API; `server/db.js` exposes Promise-based helpers. Single-writer: only one `DuckDBInstance` per `data.duckdb`. BIGINT/TIMESTAMP columns come back as BigInt/DuckDBTimestampValue and are normalized to `number` (ms) inside `db.js`.
 - **File storage**: each upload gets a folder named by its 8-char ID under `config.storagePath`

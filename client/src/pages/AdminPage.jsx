@@ -469,7 +469,7 @@ export default function AdminPage() {
 
             <hr style={{ margin: '20px 0', border: 'none', borderTop: '1px solid #e0e0e0' }} />
 
-            <h3 style={{ fontSize: 14, marginBottom: 10, color: '#555' }}>下载代理</h3>
+            <h3 style={{ fontSize: 14, marginBottom: 10, color: '#555' }}>代理转发</h3>
             <div className="form-group" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <input
                 type="checkbox"
@@ -477,27 +477,30 @@ export default function AdminPage() {
                 onChange={e => updateDownloadProxy('enabled', e.target.checked)}
                 id="downloadProxyEnabled"
               />
-              <label htmlFor="downloadProxyEnabled" style={{ margin: 0 }}>启用下载代理转发</label>
+              <label htmlFor="downloadProxyEnabled" style={{ margin: 0 }}>启用代理转发（上传 / 下载走远程）</label>
             </div>
             <div className="form-group">
-              <label>代理地址前缀</label>
+              <label>代理服务地址（/api 的上一层）</label>
               <input
                 type="text"
                 value={settings.downloadProxy?.baseUrl || ''}
                 onChange={e => updateDownloadProxy('baseUrl', e.target.value)}
-                placeholder="http://nexusoss.org/repository/download/"
+                placeholder="http://nexusoss.org/repository"
                 disabled={!settings.downloadProxy?.enabled}
               />
               <div className="hint">
-                下载请求 <code>/api/download/:fileId/:fileName</code> 将转发到该前缀下的
-                <code>{' {代理地址}/{fileId}/{fileName}'}</code>，例如
-                <code>http://nexusoss.org/repository/download/454XVG8L/file_1.txt</code>。
-                保留时长与文件校验仍由本服务负责，代理仅负责文件内容分发。留空则始终走本地下载。
+                启用后只有 <code>/api/upload</code> 与 <code>/api/download</code> 转发到远程代理服务，
+                本机不查数据库、不读文件；管理接口（<code>/api/admin</code> 等）始终走本机。
+                地址填到 <code>/api</code> 的上一层，转发时自动补 <code>/api</code> + 原始路径。
+                例如填 <code>http://nexusoss.org/repository</code>，则
+                <code>/api/upload/history</code> 转发到
+                <code>http://nexusoss.org/repository/api/upload/history</code>。
+                留空或关闭则全部走本机实现。
               </div>
             </div>
             {settings.downloadProxy?.enabled && settings.downloadProxy?.baseUrl && (
               <div className="hint" style={{ marginBottom: 12 }}>
-                预览：<code>{`${(settings.downloadProxy.baseUrl || '').replace(/\/+$/, '')}/{fileId}/{fileName}`}</code>
+                预览：<code>{`${(settings.downloadProxy.baseUrl || '').replace(/\/+$/, '')}/api/upload/history`}</code>
               </div>
             )}
 

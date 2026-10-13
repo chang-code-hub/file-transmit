@@ -45,6 +45,13 @@ app.locals.restartServer = function (newPort) {
   });
 };
 
+// 反向代理：启用后 /api/upload 与 /api/download 转发到远程代理服务，本机不查库、不读文件。
+// 管理接口（/api/admin 等）始终走本机。
+// 必须在 body 解析器之前挂载，否则 express.json() 会消费掉请求流，
+// 分块上传就无法原样透传给上游。
+const proxyMiddleware = require('./middleware/proxy');
+app.use('/api', proxyMiddleware());
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -61,7 +68,7 @@ app.get('/api/access-status', (req, res) => {
   });
 });
 
-// API routes
+// API routes（upload/download 未被代理转发时走本机实现）
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/upload', require('./routes/upload'));
 app.use('/api/download', require('./routes/download'));

@@ -1,55 +1,37 @@
 /**
- * DuckDB data access layer.
+ * DuckDB 数据访问层（@duckdb/node-api 1.2.2-alpha.19）。
+ *
+ * 该版本的连接级快捷方法（conn.run / conn.runAndReadAll 等）传入 values 数组时会挂起，
+ * 只有无参数调用才正常。因此这里所有查询统一走 prepared statement：
+ *   prepare(sql) -> bind(values) -> run() / runAndReadAll()
+ *
+ * 其它差异：
+ * - bind 直接接受裸 JS 值（string / number / bigint / boolean / null），无需构造 value 对象
+ * - number 会按 32 位 INTEGER 绑定，毫秒时间戳会溢出，因此整数统一转 bigint 绑定
+ * - BIGINT 读出为 BigInt，本模块统一转 number
+ * - 不支持 INSERT OR REPLACE，改用 DELETE + INSERT
+ * - 不支持 ON DELETE CASCADE，删除 files 时手动删 file_records
+ * - 单进程单写者，同一 data.duckdb 只能被一个进程打开
  */
-const {
-  DuckDBInstance,
-  valueFromString,
-  valueFromNumber,
-  valueFromBoolean,
-  bigintFromNumeric,
-  timestampValueFromDate,
-  nullFromNull,
-} = require('@duckdb/node-api');
+const { DuckDBInstance } = require('@duckdb/node-api');
 const path = require('path');
 
-const DB_PATH = path.join(__dirname, '..', 'data.duckdb');
+const DB_PATH = process.env.DUCKDB_PATH || path.join(__dirname, '..', 'data.duckdb');
 
 let db = null;
 let conn = null;
-
-function toParam(value) {
-  if (value === null || value === undefined) return nullFromNull();
-  if (typeof value === 'boolean') return valueFromBoolean(value);
-  if (typeof value === 'bigint') return bigintFromNumeric(value);
-  if (typeof value === 'number') return valueFromNumber(value);
-  if (typeof value === 'string') return valueFromString(value);
-  if (value instanceof Date) return timestampValueFromDate(value);
-  return valueFromString(String(value));
-}
-
-function toParams(values) {
-  return (values || []).map(toParam);
-}
 
 function toNumber(v) {
   if (v === null || v === undefined) return null;
   return typeof v === 'bigint' ? Number(v) : v;
 }
 
-function toMillis(v) {
-  if (v === null || v === undefined) return null;
-  if (typeof v === 'bigint') return Number(v);
-  if (typeof v === 'object' && v.micros !== undefined) return Number(v.micros) / 1000;
-  if (v instanceof Date) return v.getTime();
-  return Number(v);
-}
-
 function normalizeFileRow(row) {
   if (!row) return null;
   return {
     ...row,
-    created_at: toMillis(row.created_at),
-    expires_at: toMillis(row.expires_at),
+    created_at: toNumber(row.created_at),
+    expires_at: toNumber(row.expires_at),
   };
 }
 
@@ -62,18 +44,47 @@ function normalizeRecordRow(row) {
   };
 }
 
+/**
+ * 绑定值归一化。
+ *
+ * node-api 1.2.2 按 JS 类型推断绑定类型：number 会按 INTEGER(32bit) 绑定，
+ * Date.now() 这类毫秒时间戳会溢出（实测 1791642534858 -> 641172426）。
+ * 因此所有整数统一转成 bigint，按 BIGINT(64bit) 绑定。
+ */
+function toBindValue(v) {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'number' && Number.isInteger(v)) return BigInt(v);
+  return v;
+}
+
+function toBindValues(values) {
+  return (values || []).map(toBindValue);
+}
+
 function getConn() {
   if (!conn) throw new Error('Database not initialized');
   return conn;
 }
 
 async function run(sql, params) {
-  return getConn().run(sql, toParams(params));
+  const stmt = await getConn().prepare(sql);
+  try {
+    if (params && params.length) stmt.bind(toBindValues(params));
+    await stmt.run();
+  } finally {
+    stmt.destroySync();
+  }
 }
 
 async function all(sql, params) {
-  const reader = await getConn().runAndReadAll(sql, toParams(params));
-  return reader.getRowObjects();
+  const stmt = await getConn().prepare(sql);
+  try {
+    if (params && params.length) stmt.bind(toBindValues(params));
+    const reader = await stmt.runAndReadAll();
+    return (await reader.getRowObjects()) || [];
+  } finally {
+    stmt.destroySync();
+  }
 }
 
 async function get(sql, params) {
@@ -104,14 +115,10 @@ function getDb() {
 }
 
 async function closeDb() {
-  if (conn) {
-    try { conn.closeSync(); } catch {}
-    conn = null;
-  }
-  if (db) {
-    try { db.closeSync(); } catch {}
-    db = null;
-  }
+  try { if (conn && conn.closeSync) conn.closeSync(); } catch {}
+  try { if (db && db.closeSync) db.closeSync(); } catch {}
+  conn = null;
+  db = null;
 }
 
 async function createFile({ id, folderPath, description, ip, ua, userId, expiresAt }) {
