@@ -307,6 +307,7 @@ router.post('/complete', async (req, res) => {
         recursiveArchiveCheck: config.recursiveArchiveCheck,
         sevenZipPath: config.sevenZipPath,
         enableVirusDetect: config.enableVirusDetect,
+        clamscanPath: config.clamscanPath,
       });
     } catch (err) {
       logger.error(`[归档检查] 检查异常: ${err.message}`);

@@ -10,7 +10,7 @@
 - **密码保护**：管理员密码在配置文件中设定，进入管理页需验证
 - **文件类型管控**：预设常见文档、图片、压缩包、视频、音频、代码等类型，支持自定义扩展名
 - **压缩包安全**：可配置是否拦截加密压缩包、是否递归检测、是否通过文件内容（magic bytes）判断文件类型
-- **病毒检测**：通过"解压-等待-对比"的侧信道方式检测病毒——解压压缩包后等待杀毒软件处理，若文件数减少则拒绝上传
+- **病毒检测**：解压压缩包后**手动触发 clamscan 主动扫描**（Linux），并辅以"解压-等待-对比"侧信道检测——若文件数减少说明杀毒软件删除了可疑文件，同样拒绝上传
 - **IP 访问控制**：上传/下载可分别配置 IP 白名单或黑名单，支持以下格式：
   - CIDR 前缀：`192.168.1.0/24`
   - 连字符范围：`192.168.1.1-192.168.1.100`
@@ -127,8 +127,9 @@ scripts\uninstall-service.bat  # 卸载服务
 - **通过文件内容检测压缩包类型**：读取文件头（magic bytes）判断真实类型，而非仅依赖扩展名
 - **递归检测压缩包内文件**：解压并检查压缩包内每一层文件的类型是否合法
 
-- **7-Zip 路径**：用于压缩包递归检测的 7z.exe 路径
-- **病毒检测**：上传后自动解压压缩包到临时目录，根据文件数量自动决定等待时长（10~60秒），若文件数减少则判定杀毒软件删除了病毒文件，拒绝该上传并自动清理
+- **7-Zip 路径**：用于压缩包递归检测的 7z 路径。Windows 填 `C:/Program Files/7-Zip/7z.exe`；Linux 留空则自动在 PATH 中查找 `7z`/`7za`/`7zz`（`apt install p7zip-full`）
+- **病毒检测**：上传后自动解压压缩包到临时目录，**手动触发 clamscan 主动扫描**（Linux，`apt install clamav`，需定期 `freshclam` 更新病毒库）；同时对比解压前后文件数量（10~60秒等待），任一命中即拒绝该上传并自动清理
+- **clamscan 路径**：留空则自动在 PATH 中查找。Windows 无 clamscan，留空即可（退回文件列表对比检测）
 
 ![安全设置](screenshots/安全设置.png)
 
@@ -195,6 +196,7 @@ scripts\uninstall-service.bat  # 卸载服务
   "recursiveArchiveCheck": true,
   "enableVirusDetect": false,
   "sevenZipPath": "C:\\Program Files\\7-Zip\\7z.exe",
+  "clamscanPath": "",
   "downloadProxy": { "enabled": false, "baseUrl": "" },
   "ipFilter": {
     "upload": { "enabled": false, "mode": "deny", "list": [] },
@@ -223,7 +225,7 @@ file-transmit/
 │   │   └── download.js       # 下载 API
 │   ├── services/
 │   │   ├── cleanup.js        # 定期清理过期文件
-│   │   └── archiveCheck.js   # 压缩包检测与病毒检测（解压-等待-对比）
+│   │   └── archiveCheck.js   # 压缩包检测与病毒检测（7z 解压 + clamscan 主动扫描 + 解压-等待-对比）
 │   └── utils/
 │       └── ipMatch.js        # IP 匹配工具
 ├── client/

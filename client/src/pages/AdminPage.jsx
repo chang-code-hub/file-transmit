@@ -464,7 +464,23 @@ export default function AdminPage() {
               <label htmlFor="enableVirusDetect" style={{ margin: 0 }}>启用病毒检测（解压-等待-对比）</label>
             </div>
             <div className="hint" style={{ marginTop: 4, marginBottom: 12 }}>
-              上传后自动解压压缩包到临时目录，等待后对比文件数量——若文件数减少，则说明杀毒软件删除了可疑文件，上传将被拒绝。依赖 7z 和系统杀毒软件。
+              上传后自动解压压缩包到临时目录，再手动触发 clamscan 主动扫描（Linux）；
+              同时对比解压前后文件数量——若文件数减少，说明杀毒软件删除了可疑文件，上传同样被拒绝。
+              依赖 7z 与 clamscan（Linux: <code>apt install p7zip-full clamav</code>）。
+            </div>
+            <div className="form-group">
+              <label>clamscan 可执行文件路径（可留空）</label>
+              <input
+                type="text"
+                value={settings.clamscanPath || ''}
+                onChange={e => updateSetting('clamscanPath', e.target.value)}
+                placeholder="/usr/bin/clamscan"
+              />
+              <div className="hint">
+                留空则自动在 PATH 中查找 <code>clamscan</code>。Linux 通常为 <code>/usr/bin/clamscan</code>；
+                Windows 无 clamscan，留空即可（将退回「解压-等待-对比」检测）。
+                记得定期 <code>freshclam</code> 更新病毒库。
+              </div>
             </div>
 
             <hr style={{ margin: '20px 0', border: 'none', borderTop: '1px solid #e0e0e0' }} />

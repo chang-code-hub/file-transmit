@@ -41,6 +41,7 @@ router.put('/settings', adminAuth, (req, res) => {
     'recursiveArchiveCheck',
     'sevenZipPath',
     'enableVirusDetect',
+    'clamscanPath',
     'ipFilter',
     'downloadProxy',
   ];

@@ -11,8 +11,122 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const logger = require('../utils/logger');
+
+const IS_WIN = process.platform === 'win32';
+
+/**
+ * 执行外部命令（参数数组形式，避免 shell 拼接引号/转义问题，Windows 与 Linux 一致）。
+ * 不使用 execSync 字符串拼接，因为路径含空格/中文时 Windows 与 Linux 的引号规则不同。
+ */
+function runCmd(bin, args, opts = {}) {
+  return execFileSync(bin, args, {
+    encoding: 'utf-8',
+    timeout: opts.timeout || 120000,
+    maxBuffer: opts.maxBuffer || 10 * 1024 * 1024,
+    windowsHide: true,
+  });
+}
+
+/** 在 PATH 中查找可执行文件（Windows 会自动尝试 .exe） */
+function which(name) {
+  const dirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  const names = IS_WIN ? [name, name + '.exe'] : [name];
+  for (const dir of dirs) {
+    for (const n of names) {
+      const full = path.join(dir, n);
+      try {
+        if (fs.existsSync(full)) return full;
+      } catch {}
+    }
+  }
+  return null;
+}
+
+/**
+ * 解析 7z 可执行文件路径。
+ * - 显式配置了 sevenZipPath 就用它（Windows 常用 C:\Program Files-Zipz.exe）
+ * - Linux 下自动查找 PATH 中的 7z / 7za / 7zz（p7zip-full 提供 7z，7zip 包提供 7zz）
+ */
+function resolveSevenZip(configured) {
+  const configuredPath = (configured || '').trim();
+  if (configuredPath) {
+    if (fs.existsSync(configuredPath)) return configuredPath;
+    logger.warn(`[归档检测] 配置的 7z 路径不存在: ${configuredPath}，回退到 PATH 查找`);
+  }
+
+  const candidates = IS_WIN ? ['7z'] : ['7z', '7za', '7zz'];
+  for (const c of candidates) {
+    const found = which(c);
+    if (found) return found;
+  }
+  return '';
+}
+
+/**
+ * 解析 clamscan 可执行文件路径。
+ * Linux 下通常为 /usr/bin/clamscan；Windows 无 clamscan，返回 '' 即跳过。
+ */
+function resolveClamscan(configured) {
+  const configuredPath = (configured || '').trim();
+  if (configuredPath) {
+    if (fs.existsSync(configuredPath)) return configuredPath;
+    logger.warn(`[病毒检测] 配置的 clamscan 路径不存在: ${configuredPath}，回退到 PATH 查找`);
+  }
+  return which('clamscan') || '';
+}
+
+/**
+ * 手动触发 clamscan 扫描目录。
+ *
+ * 与「解压-等待-对比」那种被动检测不同，这里是主动调用 clamscan 明确扫描，
+ * 结果确定性更高。clamscan 退出码：0=干净，1=发现病毒，>1=出错。
+ *
+ * @param {string} clamscanPath - clamscan 可执行文件路径
+ * @param {string} targetPath - 待扫描目录
+ * @returns {{ infected: number, infectedFiles: string[], scanned: number, raw: string, ok: boolean }}
+ */
+function scanWithClamscan(clamscanPath, targetPath) {
+  const result = { infected: 0, infectedFiles: [], scanned: 0, raw: '', ok: false };
+  if (!clamscanPath) return result;
+
+  try {
+    // --recursive 递归，--infected 只输出命中行，--no-summary 去掉汇总行
+    const output = runCmd(clamscanPath, ['--recursive', '--infected', '--no-summary', targetPath], {
+      timeout: 300000,
+      maxBuffer: 50 * 1024 * 1024,
+    });
+    result.raw = output;
+    result.ok = true;
+  } catch (err) {
+    // 退出码 1 表示发现病毒，输出仍在 stdout
+    const code = err.status;
+    const stdout = (err.stdout || '').toString();
+    const stderr = (err.stderr || '').toString();
+
+    if (code === 1) {
+      result.raw = stdout;
+      result.ok = true;
+    } else {
+      logger.error(`[病毒检测] clamscan 执行失败 (exit=${code}): ${stderr || err.message}`);
+      result.raw = stdout + stderr;
+      return result;
+    }
+  }
+
+  // 命中行格式: /path/to/file: VirusName FOUND
+  for (const line of String(result.raw || '').split(/\r?\n/)) {
+    const m = line.match(/^(.*): (.+) FOUND\s*$/);
+    if (m) {
+      result.infected++;
+      result.infectedFiles.push(`${m[1]} -> ${m[2]}`);
+    }
+  }
+
+  return result;
+}
+
 
 // ============================================================
 // 常量定义
@@ -75,8 +189,7 @@ function countFilesRecursive(dirPath) {
  */
 function listFilesInArchive(sevenZipPath, archivePath) {
   try {
-    const output = execSync(`"${sevenZipPath}" l -slt "${archivePath}"`, {
-      encoding: 'utf-8',
+    const output = runCmd(sevenZipPath, ['l', '-slt', archivePath], {
       timeout: 60000,
       maxBuffer: 50 * 1024 * 1024,
     });
@@ -941,8 +1054,7 @@ function checkArchiveWith7z(sevenZipPath, filePath) {
   // 1. 使用 7z l -slt 列挙文件内容和加密状态
   let listOutput;
   try {
-    listOutput = execSync(`"${sevenZipPath}" l -slt "${filePath}"`, {
-      encoding: 'utf-8',
+    listOutput = runCmd(sevenZipPath, ['l', '-slt', filePath], {
       timeout: 60000,
       maxBuffer: 50 * 1024 * 1024,
     });
@@ -1048,8 +1160,7 @@ function checkArchiveWith7z(sevenZipPath, filePath) {
   // 2. 使用 7z t -p"" 进行解压缩测试
   if (!encrypted) {
     try {
-      execSync(`"${sevenZipPath}" t -p"" "${filePath}"`, {
-        encoding: 'utf-8',
+      runCmd(sevenZipPath, ['t', '-p', filePath], {
         timeout: 120000,
         maxBuffer: 10 * 1024 * 1024,
       });
@@ -1146,11 +1257,9 @@ function recursiveInspect(contents, config, archivePath) {
  * @returns {object} 检测结果
  */
 function inspectNestedArchiveWith7z(sevenZipPath, archivePath, nestedPath) {
-  const cmd = `"${sevenZipPath}" l -slt "${archivePath}" "${nestedPath}"`;
   let output;
   try {
-    output = execSync(cmd, {
-      encoding: 'utf-8',
+    output = runCmd(sevenZipPath, ['l', '-slt', archivePath, nestedPath], {
       timeout: 30000,
       maxBuffer: 10 * 1024 * 1024,
     });
@@ -1261,8 +1370,7 @@ async function extractAndRecheck(sevenZipPath, archivePath, config, depth = 0) {
       const sizeMB = (stat.size / (1024 * 1024)).toFixed(1);
       logger.log(`[归档检测] 开始解压: ${path.basename(archivePath)} (${sizeMB} MB) → 临时目录`);
 
-      const extractOutput = execSync(`"${sevenZipPath}" x -o"${tempDir}" -y "${archivePath}"`, {
-        encoding: 'utf-8',
+      const extractOutput = runCmd(sevenZipPath, ['x', `-o${tempDir}`, '-y', archivePath], {
         timeout: 120000,
         maxBuffer: 10 * 1024 * 1024,
       });
@@ -1305,6 +1413,8 @@ async function extractAndRecheck(sevenZipPath, archivePath, config, depth = 0) {
     // 传递子检测的病毒检测结果
     if (subResult.virusDetected) {
       findings._virusDetected = true;
+      findings._virusInfected = subResult.virusInfected || 0;
+      findings._virusInfectedFiles = subResult.virusInfectedFiles || [];
       findings._virusMissing = subResult.virusMissing;
       findings._virusMissingFiles = subResult.virusMissingFiles || [];
       findings._virusBeforeCount = subResult.virusBeforeCount;
@@ -1316,6 +1426,30 @@ async function extractAndRecheck(sevenZipPath, archivePath, config, depth = 0) {
     // 解压前通过 7z l 获取压缩包内应有的文件列表，解压后与实际文件系统对比
     // 若文件缺失，说明杀毒软件删除了可疑文件
     if (config.enableVirusDetect) {
+      // 手动触发 clamscan（Linux 主动杀毒）：解压完成后直接扫描临时目录
+      const clamscanPath = resolveClamscan(config.clamscanPath);
+      if (clamscanPath) {
+        const depthTag = depth > 0 ? `[深度${depth}] ` : '';
+        logger.log(`[病毒检测] ${depthTag}开始 clamscan 扫描: ${path.basename(archivePath)}`);
+        const scan = scanWithClamscan(clamscanPath, tempDir);
+
+        if (scan.ok && scan.infected > 0) {
+          const maxShow = 20;
+          const show = scan.infectedFiles.slice(0, maxShow).map(f => `  - ${f}`).join('\n');
+          const suffix = scan.infectedFiles.length > maxShow
+            ? `\n  ... 及其他 ${scan.infectedFiles.length - maxShow} 个文件`
+            : '';
+          logger.log(`[病毒检测] ${depthTag}⚠️ clamscan 发现 ${scan.infected} 个受感染文件：\n${show}${suffix}`);
+          findings._virusDetected = true;
+          findings._virusInfected = scan.infected;
+          findings._virusInfectedFiles = scan.infectedFiles;
+        } else if (scan.ok) {
+          logger.log(`[病毒检测] ${depthTag}✅ clamscan 扫描完成，未发现病毒`);
+        } else {
+          logger.warn(`[病毒检测] ${depthTag}clamscan 不可用或执行失败，回退到文件列表对比`);
+        }
+      }
+
       const archiveFileList = listFilesInArchive(sevenZipPath, archivePath);
 
       if (archiveFileList && archiveFileList.count > 0) {
@@ -1422,8 +1556,10 @@ async function extractAndRecheck(sevenZipPath, archivePath, config, depth = 0) {
 async function inspectArchives(folderPath, config) {
   const {
     blockEncryptedArchives = true,
-    sevenZipPath = '',
   } = config;
+
+  // 7z 路径：配置优先，否则按平台自动查找（Linux: 7z/7za/7zz）
+  const sevenZipPath = resolveSevenZip(config.sevenZipPath);
 
   // detectArchiveByContent 和 recursiveArchiveCheck 仅在开启 blockEncryptedArchives 时生效
   let detectArchiveByContent = config.detectArchiveByContent === true;
@@ -1704,4 +1840,10 @@ function detectRarVersion(filePath) {
 // 导出
 // ============================================================
 
-module.exports = { inspectArchives, detectArchiveType };
+module.exports = {
+  inspectArchives,
+  detectArchiveType,
+  resolveSevenZip,
+  resolveClamscan,
+  scanWithClamscan,
+};

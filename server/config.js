@@ -40,6 +40,7 @@ function loadConfig() {
   if (config.recursiveArchiveCheck === undefined) config.recursiveArchiveCheck = false;
   if (config.sevenZipPath === undefined) config.sevenZipPath = '';
   if (config.enableVirusDetect === undefined) config.enableVirusDetect = false;
+  if (config.clamscanPath === undefined) config.clamscanPath = '';
   if (!config.downloadProxy || typeof config.downloadProxy !== 'object') {
     config.downloadProxy = {};
   }
