@@ -79,8 +79,22 @@ export default function FileDetailModal({ fileId, onClose }) {
               <div>文件数量: {data.files.length} 个</div>
             </div>
 
-            <div style={{ marginTop: 20 }}>
+            <div style={{ marginTop: 20, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
               <h3 style={{ fontSize: 15, marginBottom: 10 }}>文件列表</h3>
+              {data.files.length > 0 && (
+                <a
+                  href={data.zipUrl || `/api/download/${data.id}/zip`}
+                  className="btn btn-primary btn-small"
+                  target={data.zipUrl?.startsWith('http') ? '_blank' : undefined}
+                  rel={data.zipUrl?.startsWith('http') ? 'noopener noreferrer' : undefined}
+                  download
+                >
+                  📦 打包下载（{data.files.length} 个文件）
+                </a>
+              )}
+            </div>
+
+            <div style={{ marginTop: 10 }}>
               <div style={{ border: '1px solid #eee', borderRadius: 8, overflow: 'hidden' }}>
                 {data.files.map((f, i) => (
                   <div
