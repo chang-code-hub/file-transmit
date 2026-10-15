@@ -52,11 +52,32 @@ export default function App() {
           </Routes>
         </main>
         <footer className="app-footer">
-          图标来自{' '}
-          <a href="https://icons8.com" target="_blank" rel="noopener noreferrer">Icons8</a>
-          {' '}（
-          <a href="https://icons8.com/license" target="_blank" rel="noopener noreferrer">许可</a>
-          ）
+          <div>
+            由{' '}
+            <a
+              href="https://github.com/chang-code-hub/file-transmit"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              文件传输工具
+            </a>
+            {' '}驱动 · 基于{' '}
+            <a
+              href="https://github.com/chang-code-hub/file-transmit/blob/main/LICENSE"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              MIT 协议
+            </a>
+            {' '}开源 · 使用本项目须保留此声明
+          </div>
+          <div>
+            图标来自{' '}
+            <a href="https://icons8.com" target="_blank" rel="noopener noreferrer">Icons8</a>
+            {' '}（
+            <a href="https://icons8.com/license" target="_blank" rel="noopener noreferrer">许可</a>
+            ）
+          </div>
         </footer>
       </div>
     </HashRouter>

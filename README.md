@@ -229,6 +229,11 @@ file-transmit/
 │   └── utils/
 │       └── ipMatch.js        # IP 匹配工具
 ├── client/
+│   ├── index.html            # 页面入口，含 favicon / manifest 引用
+│   ├── public/
+│   │   ├── favicon.png       # 默认站点图标
+│   │   ├── site.webmanifest  # PWA 图标清单
+│   │   └── icons/            # Icons8 3D Fluency 图标（16/32/96）
 │   └── src/
 │       ├── pages/
 │       │   ├── UploadPage.jsx     # 上传页
@@ -261,6 +266,18 @@ file-transmit/
 ## 许可
 
 [MIT License](LICENSE)
+
+### 使用声明
+
+本项目以 [MIT 协议](LICENSE) 开源，项目地址：<https://github.com/chang-code-hub/file-transmit>
+
+**使用、部署或二次分发本项目时，请在你的站点页脚或「关于」页面保留声明**，格式不限，需包含以下要素：
+
+- 项目名称与仓库链接：[文件传输工具](https://github.com/chang-code-hub/file-transmit)
+- 协议说明（MIT）
+- 下方 Icons8 图标的署名（如沿用了本项目图标）
+
+站内页脚默认已带这套声明（见 `client/src/App.jsx` 的 `.app-footer`），请勿删除；若自行替换了图标，可移除 Icons8 那一行，但项目声明需保留。
 
 ### 资源署名
 
