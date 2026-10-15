@@ -2249,14 +2249,32 @@ async function inspectArchives(folderPath, config) {
         }
       }
 
-      // 3a-2. 其余格式用 7z 检测。
-      //      RAR 绝不回退到 7z：7-Zip 26.x 读不了 RAR4，会报 "Cannot open the file
-      //      as archive" 或 "Unsupported block header size"，徒增噪音。RAR 无 unrar 时
-      //      直接走纯 JS 解析，明确记录「未安装 unrar」。
+      // 3a-2. 其余格式用 7z 检测。RAR 绝不回退到 7z（7-Zip 26.x 读不了 RAR4）。
       if (!checkResult && archiveType !== 'rar' && sevenZipPath) {
         checkResult = await checkArchiveWith7z(sevenZipPath, filePath);
         if (checkResult) {
           used7z = true;
+        }
+      }
+
+      // 3a-3. RAR 且 unrar 的结论是「无法判定」时，用纯 JS 解析器补一次加密检测。
+      //
+      // 关键：unrar 对**加密 RAR** 的 `l`/`t` 往往只报 "Cannot open the file as archive"
+      // 或 "Unsupported block header size"，不含 password / encrypted 字样，于是被判成
+      // 「格式损坏」而放过。RAR4 的 HEAD_CRYPT (0x78) 块头和 RAR5 的加密标志是客观存在的，
+      // 纯 JS 解析能读出来——加密判定绝不能只依赖 unrar 的错误文案。
+      if (archiveType === 'rar' && checkResult && !checkResult.encrypted && checkResult.sevenZipFailed) {
+        try {
+          const rarJs = runJsArchiveCheck(filePath, 'rar');
+          if (rarJs && rarJs.encrypted) {
+            checkResult.encrypted = true;
+            checkResult.encryptionConfirmed = rarJs.encryptionConfirmed;
+            checkResult.sevenZipFailed = false;
+            checkResult.warnings.push('纯 JS 解析判定为加密（unrar 无法读取该 RAR）');
+            if (rarJs.warnings) checkResult.warnings.push(...rarJs.warnings);
+          }
+        } catch (e) {
+          /* 忽略：保持原结论 */
         }
       }
 
@@ -2324,12 +2342,21 @@ async function inspectArchives(folderPath, config) {
     //    开启病毒检测时，即使未开启递归检测也要解压（用于对比文件列表）
     // RAR 即便 7z 失败，只要 unrar 读出了内容，也要能进入解压/递归/病毒检测
     const canExtract = sevenZipPath || (fileResult.archiveType === 'rar' && resolveUnrar(config.unrarPath));
-    // 不再要求 contents.length > 0：列挙失败/为空时若直接跳过，解压与病毒检测会静默失效
-    if ((recursiveArchiveCheck || config.enableVirusDetect) && canExtract && !fileResult.isEncrypted) {
+    // 不再要求 contents.length > 0：列挙失败/为空时若直接跳过，解压与病毒检测会静默失效。
+    // 但加密状态未确认的 RAR 绝不能解压——unrar 读不了时会抛出
+    // "Unsupported block header size" 之类的格式错误，把「已加密」淹没掉。
+    const uncertainRar = fileResult.archiveType === 'rar'
+      && !fileResult.isEncrypted
+      && fileResult.sevenZipFailed
+      && !fileResult.encryptionConfirmed;
+    if ((recursiveArchiveCheck || config.enableVirusDetect) && canExtract && !fileResult.isEncrypted && !uncertainRar) {
       if (fileResult.isEncrypted) {
         // 加密压缩包不能解压：这里若继续跑解压，unrar 会直接报
         // "Unsupported block header size" 之类的格式错误，把「已加密」淹没在噪音里
         logger.log(`[归档检测] ${path.basename(filePath)} 已判定为加密，跳过解压/递归/病毒检测`);
+        fileResult.recursiveFindings = [];
+      } else if (uncertainRar) {
+        logger.warn(`[归档检测] ${path.basename(filePath)} 无法确认是否加密（unrar 读取失败），为安全起见跳过解压并按未放行处理`);
         fileResult.recursiveFindings = [];
       } else if (canExtract) {
         // 使用 7z / unrar 解压后实际检测解压出的文件
@@ -2411,6 +2438,21 @@ async function inspectArchives(folderPath, config) {
         `[归档检查] ${openFailed} 个文件 7z 无法打开（可能是原始 RAR、损坏文件或伪装文件），` +
         `已用纯 JS 复核；这类文件无法做递归解压与病毒检测`
       );
+    }
+  }
+
+  // 5b. 无法确认加密状态的 RAR：unrar 读不了、纯 JS 也认不出时，
+  //     按「不可证明安全」处理。加密检测的意义就是阻止带密码的压缩包，
+  //     一个读不了的 RAR 完全可能是加密的，放行等于放弃这道防线。
+  if (blockEncryptedArchives) {
+    const uncertain = result.files.filter(f =>
+      f.isArchive && f.archiveType === 'rar' && !f.isEncrypted && f.sevenZipFailed && !f.encryptionConfirmed
+    );
+    if (uncertain.length > 0) {
+      result.blocked = true;
+      const names = uncertain.map(f => f.fileName).join(', ');
+      result.blockReasons.push(`无法确认压缩包是否加密（unrar 无法读取）: ${names}`);
+      logger.warn(`[归档检查] 无法确认 ${uncertain.length} 个 RAR 的加密状态，已按加密处理拦截`);
     }
   }
 
