@@ -131,6 +131,24 @@ scripts\uninstall-service.bat  # 卸载服务
 - **病毒检测**：上传后自动解压压缩包到临时目录，**手动触发 clamscan 主动扫描**（Linux，`apt install clamav`，需定期 `freshclam` 更新病毒库）；同时对比解压前后文件数量（10~60秒等待），任一命中即拒绝该上传并自动清理
 - **clamscan 路径**：留空则自动在 PATH 中查找。Windows 无 clamscan，留空即可（退回文件列表对比检测）
 
+> **Linux 部署必读**：加密压缩包检测与病毒检测都依赖外部二进制。缺一不可时检测会**静默降级甚至完全不触发**，日志里若不细看就像「一切正常」。
+>
+> ```bash
+> # Debian / Ubuntu
+> sudo apt install p7zip-full clamav clamav-daemon
+> sudo freshclam          # 更新病毒库，否则 clamscan 无法扫描
+> ```
+>
+> 依赖是否就绪可在**管理页 → 安全设置 → 依赖工具体检**里查看，或调用 `GET /api/admin/check-tools`（需管理员密码）。
+> 启动与上传时若缺依赖，日志会给出明确告警，例如：
+> ```
+> [归档检测] 未找到可用的 7z，加密检测将退化为纯 JS 解析，递归解压与病毒检测被跳过
+> [归档检查] 扫描 3 个文件: 压缩包 2 个 (7z=0, 魔数=2, 扩展名=0), 加密 1 个, 7z=未安装, clamscan=未安装
+> ```
+>
+> 缺失 7z 时仍会做**纯 JS 加密检测**（ZIP/RAR4/RAR5/7z 头解析，含双重扩展名脱壳），
+> 但不会解压、不递归、不杀毒；缺失 clamscan 时只剩「解压后文件列表对比」侧信道。
+
 ![安全设置](screenshots/安全设置.png)
 
 #### IP 访问控制
@@ -257,6 +275,7 @@ file-transmit/
 | GET | `/api/admin/settings` | 获取配置 |
 | PUT | `/api/admin/settings` | 更新配置 |
 | GET | `/api/admin/stats` | 获取统计信息 |
+| GET | `/api/admin/check-tools` | 检查 7z / clamscan 依赖是否就绪 |
 | POST | `/api/upload/files` | 上传文件 |
 | GET | `/api/upload/history` | 查询上传历史 |
 | GET | `/api/upload/validate-ids` | 批量验证文件 ID 有效性 |

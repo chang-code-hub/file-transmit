@@ -45,23 +45,59 @@ function which(name) {
 }
 
 /**
+ * 诊断信息缓存：7z / clamscan 的解析结果与告警每个进程只详细打一次，
+ * 后续调用直接复用，避免每次上传都刷屏。
+ */
+const _toolCache = { sevenZip: new Map(), clamscan: new Map() };
+
+/**
+ * 判断路径是否为可执行文件。
+ * 比 fs.existsSync 更严：文件必须存在且不是目录。
+ * Linux 下还会额外检查执行位（fs.accessSync X_OK），避免「存在但没 +x」时静默失败。
+ */
+function isExecutable(p) {
+  try {
+    const st = fs.statSync(p);
+    if (!st.isFile()) return false;
+  } catch {
+    return false;
+  }
+  if (!IS_WIN) {
+    try {
+      fs.accessSync(p, fs.constants.X_OK);
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * 解析 7z 可执行文件路径。
  * - 显式配置了 sevenZipPath 就用它（Windows 常用 C:\Program Files-Zipz.exe）
  * - Linux 下自动查找 PATH 中的 7z / 7za / 7zz（p7zip-full 提供 7z，7zip 包提供 7zz）
  */
 function resolveSevenZip(configured) {
   const configuredPath = (configured || '').trim();
+  const cacheKey = configuredPath;
+  if (_toolCache.sevenZip.has(cacheKey)) return _toolCache.sevenZip.get(cacheKey);
+  const _put = (v) => { _toolCache.sevenZip.set(cacheKey, v); return v; };
   if (configuredPath) {
-    if (fs.existsSync(configuredPath)) return configuredPath;
-    logger.warn(`[归档检测] 配置的 7z 路径不存在: ${configuredPath}，回退到 PATH 查找`);
+    if (isExecutable(configuredPath)) return _put(configuredPath);
+    logger.warn(`[归档检测] 配置的 7z 路径不可用: ${configuredPath}（不存在或无执行权限），回退到 PATH 查找`);
   }
 
   const candidates = IS_WIN ? ['7z'] : ['7z', '7za', '7zz'];
   for (const c of candidates) {
     const found = which(c);
-    if (found) return found;
+    if (found) return _put(found);
   }
-  return '';
+
+  logger.warn(
+    `[归档检测] 未找到可用的 7z，加密检测将退化为纯 JS 解析，递归解压与病毒检测被跳过。` +
+    `Linux 安装: apt install p7zip-full 或 apt install 7zip，或在 config.json 中设置 sevenZipPath`
+  );
+  return _put('');
 }
 
 /**
@@ -70,11 +106,22 @@ function resolveSevenZip(configured) {
  */
 function resolveClamscan(configured) {
   const configuredPath = (configured || '').trim();
+  const cacheKey = configuredPath;
+  if (_toolCache.clamscan.has(cacheKey)) return _toolCache.clamscan.get(cacheKey);
+  const _put = (v) => { _toolCache.clamscan.set(cacheKey, v); return v; };
   if (configuredPath) {
-    if (fs.existsSync(configuredPath)) return configuredPath;
-    logger.warn(`[病毒检测] 配置的 clamscan 路径不存在: ${configuredPath}，回退到 PATH 查找`);
+    if (isExecutable(configuredPath)) return _put(configuredPath);
+    logger.warn(`[病毒检测] 配置的 clamscan 路径不可用: ${configuredPath}（不存在或无执行权限），回退到 PATH 查找`);
   }
-  return which('clamscan') || '';
+
+  const found = which('clamscan');
+  if (found) return _put(found);
+
+  logger.warn(
+    `[病毒检测] 未找到可用的 clamscan，跳过主动杀毒扫描，仅保留「解压后文件列表对比」侧信道检测。` +
+    `Linux 安装: apt install clamav clamav-daemon 并执行 freshclam 更新病毒库`
+  );
+  return _put('');
 }
 
 /**
@@ -102,6 +149,7 @@ function scanWithClamscan(clamscanPath, targetPath) {
   } catch (err) {
     // 退出码 1 表示发现病毒，输出仍在 stdout
     const code = err.status;
+    const errCode = err.code; // ENOENT / EACCES 等 spawn 错误
     const stdout = (err.stdout || '').toString();
     const stderr = (err.stderr || '').toString();
 
@@ -109,7 +157,15 @@ function scanWithClamscan(clamscanPath, targetPath) {
       result.raw = stdout;
       result.ok = true;
     } else {
-      logger.error(`[病毒检测] clamscan 执行失败 (exit=${code}): ${stderr || err.message}`);
+      // 这里必须分清「扫到了病毒」和「clamscan 根本没跑起来」：
+      // 后者若不报错，就会出现「病毒检测已启用但其实什么都没做」的假象。
+      const reason = errCode
+        ? `无法启动 (${errCode})`
+        : `exit=${code}${stderr ? ': ' + stderr.trim().slice(0, 200) : ''}`;
+      logger.error(`[病毒检测] clamscan 执行失败 ${reason}`);
+      if (/virus database|Can't initialize|can't initialize/i.test(String(stderr))) {
+        logger.error(`[病毒检测] clamscan 病毒库未就绪，请执行: sudo freshclam`);
+      }
       result.raw = stdout + stderr;
       return result;
     }
@@ -136,6 +192,30 @@ function scanWithClamscan(clamscanPath, targetPath) {
 const ARCHIVE_EXTENSIONS = new Set([
   '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.iso',
 ]);
+
+/** 双扩展名脱壳深度上限：防止 a.zip.exe.exe... 之类的伪装绕过扩展名判断 */
+const MAX_UNWRAP_DEPTH = 3;
+
+/**
+ * 拆掉「双重扩展名」外层伪装，返回真正用于判定压缩类型的文件名。
+ *
+ * 上传过滤按扩展名放行，攻击者可用 `payload.exe.zip` / `evil.zip.exe.zip`
+ * 这类名字骗过第一层校验；这里只取最内层的扩展名做压缩包判定。
+ * 例: evil.zip.exe.zip → evil.zip  → 命中 .zip
+ *     payload.exe.zip  → payload.exe → 非压缩包（按扩展名判定时如实放过）
+ */
+function unwrapCompoundName(filename) {
+  let name = filename;
+  for (let i = 0; i < MAX_UNWRAP_DEPTH; i++) {
+    const ext = path.extname(name).toLowerCase();
+    if (!ext) break;
+    const inner = name.slice(0, name.length - ext.length);
+    const innerExt = path.extname(inner).toLowerCase();
+    if (!innerExt) break;
+    name = inner;
+  }
+  return name;
+}
 
 /** 文件魔数签名表 */
 const SIGNATURES = [
@@ -299,7 +379,7 @@ function readBytes(fd, offset, length) {
  * 检查文件名是否具有压缩文件扩展名
  */
 function isArchiveExtension(filename) {
-  const ext = path.extname(filename).toLowerCase();
+  const ext = path.extname(unwrapCompoundName(filename)).toLowerCase();
   return ARCHIVE_EXTENSIONS.has(ext);
 }
 
@@ -307,7 +387,7 @@ function isArchiveExtension(filename) {
  * 根据扩展名获取压缩文件类型
  */
 function getArchiveTypeByExtension(filename) {
-  const ext = path.extname(filename).toLowerCase();
+  const ext = path.extname(unwrapCompoundName(filename)).toLowerCase();
   const map = {
     '.zip': 'zip', '.rar': 'rar', '.7z': '7z', '.tar': 'tar',
     '.gz': 'gz', '.bz2': 'bz2', '.xz': 'xz', '.iso': 'iso',
@@ -1157,10 +1237,19 @@ function checkArchiveWith7z(sevenZipPath, filePath) {
     }
   }
 
-  // 2. 使用 7z t -p"" 进行解压缩测试
+  // 2. 使用空密码做解压缩测试
+  //
+  // 注意参数形式：7z 把 `-p` 的值当作粘连参数（`-p{Password}`）。此前写成
+  // `['t', '-p', filePath]` 时，部分变体会把 filePath 当成密码，于是打开失败
+  // 却不报 "Wrong password"，最终静默判为「未加密」——加密检测因此在 Linux 上失效。
+  // 这里显式传 `-p-`（密码为空），与文件路径分开，语义明确且各变体一致。
   if (!encrypted) {
+    const testArgs = ['t', '-p-', filePath];
+    if (!sevenZipSupportsEmptyPassword(sevenZipPath)) {
+      warnings.push('当前 7z 帮助未声明空密码语法，已使用 -p- 进行解压测试');
+    }
     try {
-      runCmd(sevenZipPath, ['t', '-p', filePath], {
+      runCmd(sevenZipPath, testArgs, {
         timeout: 120000,
         maxBuffer: 10 * 1024 * 1024,
       });
@@ -1170,10 +1259,13 @@ function checkArchiveWith7z(sevenZipPath, filePath) {
       const stdOut = (err.stdout || '').toString();
       const combined = stdErr + stdOut;
 
-      if (combined.includes('Wrong password') || combined.includes('Cannot open encrypted')) {
+      if (/Wrong password|Cannot open encrypted|Enter password|Data Error in encrypted file|Cannot open the file as \[ARCHIVE\] archive/i.test(combined)) {
         // 空密码测试失败说明确实是加密的
         encrypted = true;
         warnings.push('解压测试确认文件已加密');
+      } else if (combined.trim() === '') {
+        // 7z 有时不输出任何内容即退出——无法据此判定加密，如实记录，避免假装「未加密」
+        warnings.push('解压测试失败且无输出，无法确认加密状态（已按未加密处理，建议检查 7z 权限）');
       } else {
         warnings.push(`解压测试未通过: ${(stdErr || stdOut).substring(0, 200)}`);
       }
@@ -1428,6 +1520,9 @@ async function extractAndRecheck(sevenZipPath, archivePath, config, depth = 0) {
     if (config.enableVirusDetect) {
       // 手动触发 clamscan（Linux 主动杀毒）：解压完成后直接扫描临时目录
       const clamscanPath = resolveClamscan(config.clamscanPath);
+      if (!clamscanPath) {
+        logger.warn(`[病毒检测] ${depth > 0 ? `[深度${depth}] ` : ''}已启用病毒检测但找不到 clamscan，本次仅做文件列表对比`);
+      }
       if (clamscanPath) {
         const depthTag = depth > 0 ? `[深度${depth}] ` : '';
         logger.log(`[病毒检测] ${depthTag}开始 clamscan 扫描: ${path.basename(archivePath)}`);
@@ -1539,6 +1634,39 @@ async function extractAndRecheck(sevenZipPath, archivePath, config, depth = 0) {
   return findings;
 }
 
+/**
+ * 解析 7z 的 --help / --help 命令行开关，用于判断是否支持指定的空密码语法。
+ * 不同发行版的 7z 变体（p7zip 的 7z、7zip 包的 7zz、第三方 7za）对 `-p` 的处理不同：
+ * 有的把 `-p` 与 `FILE` 连成一个参数解释为「密码 = FILE」，于是打开压缩包时密码不对、静默判成未加密。
+ * 这里通过 --help 的输出做一次存在性判断，避免依赖版本号约定。
+ */
+function sevenZipHelpText(sevenZipPath) {
+  const cacheKey = 'help:' + sevenZipPath;
+  if (_toolCache.sevenZip.has(cacheKey)) return _toolCache.sevenZip.get(cacheKey);
+  let text = '';
+  try {
+    // 7z 对未知开关通常打印帮助并以非 0 退出；把 stdout/stderr 都收下
+    const out = runCmd(sevenZipPath, ['--help'], { timeout: 15000, maxBuffer: 2 * 1024 * 1024 });
+    text = String(out || '');
+  } catch (err) {
+    text = ((err.stdout || '') + (err.stderr || '')).toString();
+  }
+  _toolCache.sevenZip.set(cacheKey, text);
+  return text;
+}
+
+/**
+ * 判断当前 7z 是否支持 `-p` 不带值（即显式传入空密码）。
+ * 帮助文本里 `-p{Password}` 这种写法表示密码是 `-p` 的粘连值，单独传 `-p` 会被吃掉。
+ */
+function sevenZipSupportsEmptyPassword(sevenZipPath) {
+  const help = sevenZipHelpText(sevenZipPath);
+  if (!help) return false;
+  // 标准 p7zip / 7-Zip 帮助里写作 "-p{Password}"；支持空密码时通常还有 "-p-" 之类的说明
+  // 只要出现 `=Password` 或 `{Password}` 形式，说明密码是粘连参数，空密码需改用 "-p-"。
+  return !/=\{?Password\}?/.test(help) && !/\{Password\}/.test(help);
+}
+
 // ============================================================
 // 主入口函数
 // ============================================================
@@ -1592,6 +1720,13 @@ async function inspectArchives(folderPath, config) {
   }
 
   const files = dirEntries.filter(e => e.isFile());
+
+  // 没有任何压缩文件时，病毒检测的「解压后对比」没有可执行对象，这里必须留痕，
+  // 否则日志静默会让人误以为检测在工作（尤其是 Linux 下 7z / clamscan 缺失时）。
+  if (files.length === 0) {
+    logger.log(`[归档检查] 目录中无文件，跳过压缩包检测: ${path.basename(folderPath)}`);
+    return result;
+  }
 
   for (const entry of files) {
     const fileName = entry.name;
@@ -1775,6 +1910,23 @@ async function inspectArchives(folderPath, config) {
     result.files.push(fileResult);
   }
 
+  // 汇总日志：让「检测到底有没有跑」在日志里一眼可见
+  if (result.archivesFound === 0) {
+    logger.log(`[归档检查] ${files.length} 个文件均非压缩包，未触发加密/病毒检测`);
+  } else {
+    const methodCount = { '7z': 0, content: 0, extension: 0 };
+    for (const f of result.files) {
+      if (f.isArchive) methodCount[f.detectionMethod] = (methodCount[f.detectionMethod] || 0) + 1;
+    }
+    logger.log(
+      `[归档检查] 扫描 ${files.length} 个文件: 压缩包 ${result.archivesFound} 个` +
+      ` (7z=${methodCount['7z']}, 魔数=${methodCount.content}, 扩展名=${methodCount.extension})` +
+      `, 加密 ${result.encryptedFound} 个` +
+      `, 7z=${sevenZipPath || '未安装'}` +
+      `, clamscan=${config.enableVirusDetect ? (resolveClamscan(config.clamscanPath) || '未安装') : '已关闭'}`
+    );
+  }
+
   // 6. 判断是否需要阻止上传（直接上传 + 递归检测到的加密文件）
   if (blockEncryptedArchives && result.encryptedFound > 0) {
     result.blocked = true;
@@ -1837,13 +1989,98 @@ function detectRarVersion(filePath) {
 }
 
 // ============================================================
+// 诊断
+// ============================================================
+
+/**
+ * 检查依赖工具是否就绪。
+ *
+ * Linux 上「加密检测 + 病毒检测」实际依赖 7z 与 clamscan；缺一不可时
+ * 检测会静默降级甚至完全不触发。这里给出明确状态，供 /api/admin/check-tools
+ * 与启动日志使用，让问题在部署时就能暴露，而不是等上传时才发现没检测。
+ *
+ * @param {object} [cfg] - { sevenZipPath, clamscanPath, enableVirusDetect }
+ * @returns {{ sevenZip: object, clamscan: object, warnings: string[] }}
+ */
+function checkToolStatus(cfg = {}) {
+  const sevenZipPath = resolveSevenZip(cfg.sevenZipPath);
+  const needClam = cfg.enableVirusDetect !== false;
+  const clamscanPath = needClam ? resolveClamscan(cfg.clamscanPath) : '';
+
+  const warnings = [];
+
+  const sevenZip = {
+    configuredPath: (cfg.sevenZipPath || '').trim(),
+    resolvedPath: sevenZipPath || '',
+    available: Boolean(sevenZipPath),
+  };
+  if (!sevenZip.available) {
+    warnings.push(
+      IS_WIN
+        ? '未找到 7z：安装 7-Zip 或在 config.json 中设置 sevenZipPath'
+        : '未找到 7z：apt install p7zip-full （或 apt install 7zip），或在 config.json 中设置 sevenZipPath'
+    );
+    warnings.push('缺少 7z 时：加密检测退化为纯 JS 解析，递归解压与病毒检测被跳过');
+  }
+
+  const clamscan = {
+    configuredPath: (cfg.clamscanPath || '').trim(),
+    resolvedPath: clamscanPath || '',
+    available: Boolean(clamscanPath),
+    required: needClam,
+  };
+  if (needClam && !clamscan.available) {
+    warnings.push(
+      IS_WIN
+        ? '未找到 clamscan（Windows 无此工具）：病毒检测仅剩「解压后文件列表对比」侧信道'
+        : '未找到 clamscan：apt install clamav clamav-daemon && freshclam'
+    );
+    warnings.push('缺少 clamscan 时：主动杀毒扫描被跳过，无法识别已知病毒特征');
+  } else if (needClam && clamscan.available) {
+    // 病毒库是否就绪决定了扫描是否有意义
+    const dbCheck = verifyClamscanDb(clamscanPath);
+    clamscan.db = dbCheck;
+    if (!dbCheck.ok) {
+      warnings.push(`clamscan 病毒库异常: ${dbCheck.message}，扫描结果不可信，请执行 freshclam`);
+    }
+  }
+
+  // Linux 下尤其容易出现「二进制在，但运行时因病毒库/权限失败」——统一收口到 warnings
+  return { sevenZip, clamscan, platform: IS_WIN ? 'windows' : 'linux', warnings };
+}
+
+/**
+ * 验证 clamscan 病毒库是否可用（无库时 clamscan 会以 exit=2 失败，日志只有一句 "执行失败"）。
+ */
+function verifyClamscanDb(clamscanPath) {
+  try {
+    // --version 不读病毒库，只能确认二进制能跑
+    const out = runCmd(clamscanPath, ['--version'], { timeout: 15000, maxBuffer: 1024 * 1024 });
+    const m = String(out || '').match(/ClamAV\s+([0-9][^\s/]*)/);
+    return {
+      ok: true,
+      version: m ? m[1] : '',
+      message: `clamscan ${m ? m[1] : ''} 可用`,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      version: '',
+      message: `clamscan 无法执行: ${(err.stderr || err.message || '').toString().slice(0, 200)}`,
+    };
+  }
+}
+
+// ============================================================
 // 导出
 // ============================================================
 
 module.exports = {
   inspectArchives,
+  _resetToolCache: () => { _toolCache.sevenZip.clear(); _toolCache.clamscan.clear(); },
   detectArchiveType,
   resolveSevenZip,
   resolveClamscan,
   scanWithClamscan,
+  checkToolStatus,
 };

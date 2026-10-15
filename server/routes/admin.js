@@ -4,6 +4,7 @@ const adminAuth = require('../middleware/auth');
 const logger = require('../utils/logger');
 const { runCleanup } = require('../services/cleanup');
 const { getConfig, updateConfig, normalizeProxyBaseUrl } = require('../config');
+const { checkToolStatus } = require('../services/archiveCheck');
 const { getStats } = require('../db');
 
 // Login - verify admin password
@@ -122,6 +123,18 @@ router.post('/cleanup', adminAuth, (req, res) => {
     logger.error('[管理] 清理任务执行失败:', err.message);
     res.status(500).json({ error: '清理任务执行失败: ' + err.message });
   }
+});
+
+// 依赖工具体检：7z / clamscan 是否可用（Linux 上这两个缺失会让加密检测与杀毒静默失效）
+// 放在 auth 之后，避免泄露服务器安装情况
+router.get('/check-tools', adminAuth, (req, res) => {
+  const status = checkToolStatus({
+    sevenZipPath: getConfig('sevenZipPath'),
+    clamscanPath: getConfig('clamscanPath'),
+    enableVirusDetect: getConfig('enableVirusDetect'),
+  });
+  logger.log(`[管理] 依赖体检: 7z=${status.sevenZip.resolvedPath || '未找到'}, clamscan=${status.clamscan.resolvedPath || '未找到'}`);
+  res.json(status);
 });
 
 module.exports = router;

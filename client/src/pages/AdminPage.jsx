@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 const DEFAULT_FILE_TYPES = {
   documents: ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.txt', '.csv', '.rtf', '.odt', '.ods', '.odp'],
@@ -449,7 +449,12 @@ export default function AdminPage() {
                 onChange={e => updateSetting('sevenZipPath', e.target.value)}
                 placeholder='例如 C:\Program Files\7-Zip\7z.exe'
               />
-              <div className="hint">配置后递归检测时将调用 7z 解压嵌套压缩包判断是否加密，留空则仅通过文件名后缀判断</div>
+              <div className="hint">
+                配置后递归检测时将调用 7z 解压嵌套压缩包判断是否加密，留空则仅通过文件名后缀判断。
+                <strong>Linux 下加密检测与病毒检测都依赖 7z</strong>：
+                <code>apt install p7zip-full</code>（或 <code>apt install 7zip</code>）。
+                未安装时检测会静默降级为纯 JS 解析，并跳过解压与杀毒。
+              </div>
             </div>
 
             <hr style={{ margin: '20px 0', border: 'none', borderTop: '1px solid #e0e0e0' }} />
@@ -482,6 +487,8 @@ export default function AdminPage() {
                 记得定期 <code>freshclam</code> 更新病毒库。
               </div>
             </div>
+
+            <ToolStatusPanel password={password} />
 
             <hr style={{ margin: '20px 0', border: 'none', borderTop: '1px solid #e0e0e0' }} />
 
@@ -610,6 +617,79 @@ export default function AdminPage() {
       >
         {saving ? '保存中...' : '保存设置'}
       </button>
+    </div>
+  );
+}
+
+/**
+ * 依赖工具体检面板
+ *
+ * Linux 上「加密压缩包检测」与「病毒检测」都依赖外部二进制（7z / clamscan）。
+ * 缺失时后端会静默降级甚至完全不检测，日志里若不细看就像「一切正常」。
+ * 这里把依赖状态直接摆在管理页，让部署时就能发现缺了什么。
+ */
+function ToolStatusPanel({ password }) {
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const load = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const res = await fetch('/api/admin/check-tools', {
+        headers: { 'x-admin-password': password || '' },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setStatus(await res.json());
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { if (password) load(); }, [password]);
+
+  const row = (label, tool) => (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', padding: '6px 0', borderBottom: '1px solid #f0f0f0' }}>
+      <span style={{ width: 90, color: '#555', fontSize: 13 }}>{label}</span>
+      <span style={{ fontWeight: 600, color: tool.available ? '#276749' : '#c53030', fontSize: 13 }}>
+        {tool.available ? '已就绪' : (tool.required === false ? '未启用' : '未找到')}
+      </span>
+      <span style={{ color: '#999', fontSize: 12, wordBreak: 'break-all' }}>
+        {tool.resolvedPath || tool.configuredPath || '—'}
+      </span>
+    </div>
+  );
+
+  return (
+    <div className="form-group" style={{ background: '#fafafa', border: '1px solid #eee', borderRadius: 8, padding: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+        <strong style={{ fontSize: 13, color: '#555' }}>依赖工具体检</strong>
+        <button type="button" className="btn" style={{ padding: '4px 10px', fontSize: 12 }} onClick={load} disabled={loading}>
+          {loading ? '检测中...' : '重新检测'}
+        </button>
+      </div>
+
+      {error && <div className="alert alert-warning" style={{ marginBottom: 8 }}>检测失败: {error}</div>}
+
+      {status && (
+        <>
+          {row('7z', status.sevenZip)}
+          {row('clamscan', status.clamscan)}
+          {status.warnings.length > 0 && (
+            <div className="alert alert-warning" style={{ marginTop: 10, marginBottom: 0, fontSize: 12, lineHeight: 1.7 }}>
+              {status.warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
+            </div>
+          )}
+          {status.warnings.length === 0 && (
+            <div className="alert alert-success" style={{ marginTop: 10, marginBottom: 0, fontSize: 12 }}>
+              ✅ 加密检测与病毒检测依赖齐备，功能正常
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
