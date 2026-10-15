@@ -11,6 +11,7 @@ const ipFilter = require('../middleware/ipFilter');
 const logger = require('../utils/logger');
 
 const { inspectArchives } = require('../services/archiveCheck');
+const { clientIpOf } = require('../utils/clientIp');
 
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB per chunk
 
@@ -75,7 +76,7 @@ const chunkUpload = multer({
 router.post('/init', (req, res) => {
   try {
     const { files, description } = req.body;
-    const clientIp = (req.ip || req.connection.remoteAddress || '').replace(/^::ffff:/, '');
+    const clientIp = clientIpOf(req);
 
     if (!files || !Array.isArray(files) || files.length === 0) {
       logger.log(`[上传] 初始化请求无效: 未提供文件列表, IP=${clientIp}`);
@@ -348,8 +349,8 @@ router.post('/complete', async (req, res) => {
     // Create DB records
     const retentionHours = config.retentionHours || 24;
     const expiresAt = Date.now() + retentionHours * 60 * 60 * 1000;
-    const clientIp = req.ip || req.connection.remoteAddress || '';
-    const ip = clientIp.replace(/^::ffff:/, '');
+    const clientIp = clientIpOf(req);
+    const ip = clientIp;
 
     await createFile({
       id: fileId,

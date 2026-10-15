@@ -39,6 +39,10 @@ function loadConfig() {
   if (config.detectArchiveByContent === undefined) config.detectArchiveByContent = false;
   if (config.recursiveArchiveCheck === undefined) config.recursiveArchiveCheck = false;
   if (config.sevenZipPath === undefined) config.sevenZipPath = '';
+  if (config.unrarPath === undefined) config.unrarPath = '';
+  // 反向代理信任：false=忽略转发头（默认，防伪造）；true=采信转发头；
+  // 数组=仅当 remoteAddress 命中列表时才采信，形如 ["127.0.0.1", "10.0.0.0/8"]
+  if (config.trustProxy === undefined) config.trustProxy = false;
   if (config.enableVirusDetect === undefined) config.enableVirusDetect = false;
   if (config.clamscanPath === undefined) config.clamscanPath = '';
   if (!config.downloadProxy || typeof config.downloadProxy !== 'object') {

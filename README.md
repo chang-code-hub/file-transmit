@@ -68,6 +68,95 @@ npm start
 
 服务默认监听 **3000** 端口，浏览器访问 `http://localhost:3000`。
 
+### 系统依赖安装（Linux）
+
+加密压缩包检测与病毒检测依赖三个外部二进制，缺一会**静默降级甚至完全不触发**：
+
+| 工具 | 作用 | 缺失时的后果 |
+|------|------|--------------|
+| **7z** / `7za` / `7zz` | 列挙、加密检测、解压、递归、病毒检测入口 | 加密检测退化为纯 JS；**不解压、不递归、不杀毒** |
+| **unrar** | RAR 专用解包（7-Zip 26.x 已不支持 RAR4） | RAR 无法检测加密与内容 |
+| **clamscan** | 主动病毒扫描 | 只剩「解压后文件列表对比」侧信道，无法识别已知病毒 |
+
+> 需要 **RAR 支持**请装 RARLAB 版 `unrar`；发行版自带的 `unrar-free` **只支持 RAR5**，读 RAR4 会失败。
+
+**Debian / Ubuntu（apt）**
+```bash
+sudo apt update
+sudo apt install p7zip-full unrar clamav clamav-daemon
+sudo freshclam                 # 更新病毒库，否则 clamscan 无法扫描
+# 需要常驻自动更新时：
+sudo systemctl enable --now clamav-freshclam
+```
+> `unrar` 在 Debian/Ubuntu 主仓库中即为 RARLAB 版；若源里只有 `unrar-free`，见下方「从源码安装 unrar」。
+
+**RHEL / CentOS / Rocky / Alma（yum）**
+```bash
+sudo yum install epel-release      # 7z 与 clamav 在 EPEL 里
+sudo yum install p7zip p7zip-plugins unrar clamav clamav-update
+sudo freshclam
+```
+> 老版本 RHEL 的 `p7zip` 提供 `7za`，`p7zip-plugins` 补齐 RAR/7z 格式支持。
+
+**Fedora / RHEL 8+（dnf）**
+```bash
+sudo dnf install epel-release
+sudo dnf install p7zip p7zip-plugins unrar clamav clamav-update
+sudo freshclam
+```
+
+**Arch Linux / Manjaro（pacman）**
+```bash
+sudo pacman -S p7zip unrar clamav
+sudo freshclam
+```
+> `unrar` 在 `extra` 源中即为 RARLAB 版。
+
+**openSUSE（zypper）**
+```bash
+sudo zypper install p7zip unrar clamav
+sudo freshclam
+```
+> `unrar` 需启用 Packman 源；若只有 `unrar-free`，见下方「从源码安装 unrar」。
+
+**Alpine（apk）**
+```bash
+sudo apk add p7zip unrar clamav clamav-daemon
+sudo freshclam
+```
+
+**从源码安装 unrar（所有发行版通用，确保是 RARLAB 版）**
+```bash
+# x86_64
+wget https://www.rarlab.com/rar/rarlinux-x64-712.tar.gz
+# 或 arm64: https://www.rarlab.com/rar/rarlinux-arm64-712.tar.gz
+tar -xzf rarlinux-x64-*.tar.gz
+cd rar
+sudo install -m 755 unrar /usr/local/bin/unrar
+unrar                       # 能打印版本号即成功
+```
+
+**ClamAV 病毒库维护**
+```bash
+sudo freshclam              # 手动更新
+sudo systemctl enable --now clamav-freshclam   # Debian/Ubuntu 自动更新
+```
+> 首次 `freshclam` 需下载数百 MB 病毒库，耗时较长。若报 `freshclam: ERROR: ... database lock`，
+> 先停掉正在跑的更新服务：`sudo systemctl stop clamav-freshclam` 再执行。
+
+**Windows**
+- 7-Zip：安装 [7-Zip](https://www.7-zip.org/)，路径填 `C:\Program Files-Zipz.exe`
+- RAR：安装 [WinRAR](https://www.rarlab.com/)，可选填 `unrar.exe` 路径
+- ClamAV：Windows 无 `clamscan`，病毒检测自动退回「解压后文件列表对比」
+
+**验证是否就绪**
+```bash
+7z | head -1        # 打印 7-Zip 版本
+unrar               # 打印 UNRAR 版本
+clamscan --version  # 打印 ClamAV 版本
+```
+或在**管理页 → 安全设置 → 依赖工具体检**里一键查看，等价于 `GET /api/admin/check-tools`。
+
 ### 安装为 Windows 服务
 
 以**管理员身份**运行：
@@ -127,17 +216,15 @@ scripts\uninstall-service.bat  # 卸载服务
 - **通过文件内容检测压缩包类型**：读取文件头（magic bytes）判断真实类型，而非仅依赖扩展名
 - **递归检测压缩包内文件**：解压并检查压缩包内每一层文件的类型是否合法
 
-- **7-Zip 路径**：用于压缩包递归检测的 7z 路径。Windows 填 `C:/Program Files/7-Zip/7z.exe`；Linux 留空则自动在 PATH 中查找 `7z`/`7za`/`7zz`（`apt install p7zip-full`）
-- **病毒检测**：上传后自动解压压缩包到临时目录，**手动触发 clamscan 主动扫描**（Linux，`apt install clamav`，需定期 `freshclam` 更新病毒库）；同时对比解压前后文件数量（10~60秒等待），任一命中即拒绝该上传并自动清理
+- **7-Zip 路径**：用于压缩包递归检测的 7z 路径。Windows 填 `C:/Program Files/7-Zip/7z.exe`；Linux 留空则自动在 PATH 中查找 `7z`/`7za`/`7zz`
+- **unrar 路径**：RAR 专用解包器。7-Zip 26.x 已不支持原始 RAR（RAR 4.x），Linux 必须装 RARLAB 版 `unrar`，否则 RAR 无法检测加密与内容
+- **病毒检测**：上传后自动解压压缩包到临时目录，**手动触发 clamscan 主动扫描**（Linux，需安装 clamav 并定期 `freshclam` 更新病毒库）；同时对比解压前后文件数量（10~60秒等待），任一命中即拒绝该上传并自动清理
 - **clamscan 路径**：留空则自动在 PATH 中查找。Windows 无 clamscan，留空即可（退回文件列表对比检测）
 
-> **Linux 部署必读**：加密压缩包检测与病毒检测都依赖外部二进制。缺一不可时检测会**静默降级甚至完全不触发**，日志里若不细看就像「一切正常」。
->
-> ```bash
-> # Debian / Ubuntu
-> sudo apt install p7zip-full clamav clamav-daemon
-> sudo freshclam          # 更新病毒库，否则 clamscan 无法扫描
-> ```
+> **Linux 部署必读**：加密压缩包检测与病毒检测都依赖外部二进制（7z / unrar / clamscan）。
+> 缺一不可时检测会**静默降级甚至完全不触发**，日志里若不细看就像「一切正常」。
+> 各发行版（apt / yum / dnf / pacman / zypper / apk）的安装命令见
+> [系统依赖安装](#系统依赖安装linux)。
 >
 > 依赖是否就绪可在**管理页 → 安全设置 → 依赖工具体检**里查看，或调用 `GET /api/admin/check-tools`（需管理员密码）。
 > 启动与上传时若缺依赖，日志会给出明确告警，例如：
@@ -148,6 +235,22 @@ scripts\uninstall-service.bat  # 卸载服务
 >
 > 缺失 7z 时仍会做**纯 JS 加密检测**（ZIP/RAR4/RAR5/7z 头解析，含双重扩展名脱壳），
 > 但不会解压、不递归、不杀毒；缺失 clamscan 时只剩「解压后文件列表对比」侧信道。
+>
+> **「7z 打不开」不等于「加密」**。7-Zip 对原始 `.rar`（RAR 4.x，7-Zip 已停止支持）、
+> 损坏文件和伪装成压缩包的普通文件，都会输出同一种报错：
+> ```
+> ERROR: README.rar
+> Cannot open the file as archive
+> Can't open as archive: 1
+> ```
+> 这类文件既不能当加密拦掉（会误杀），也不能静默放过（等于没检测）。现在的处理是：
+> 7z 打不开 → 纯 JS 再判一次 → 两条路径都认为加密才拦截，否则按「无法确认」记录并放行，
+> 同时在日志与汇总里单独统计 `7z打不开 N 个`，提醒这类文件跳过了递归解压与病毒检测。
+>
+> **RAR 支持**：7-Zip 26.x 不支持原始 RAR（RAR 4.x），因此 RAR 交给 **unrar** 处理
+> （须 RARLAB 版，发行版的 `unrar-free` 只支持 RAR5，见[系统依赖安装](#系统依赖安装linux)）。
+> 安装后 RAR 的列挙、加密检测、解压、递归与病毒检测全部走 unrar，与 7z 链路一致。
+> 管理页「安全设置」里可配置 `unrar 路径`，并可在「依赖工具体检」查看是否就绪。
 
 ![安全设置](screenshots/安全设置.png)
 
@@ -190,6 +293,72 @@ scripts\uninstall-service.bat  # 卸载服务
 - **上游不可用**：返回 `502 代理服务不可用`
 - **关闭或留空**：走本机实现（本地 DuckDB + 本地文件存储）
 
+## 反向代理与真实 IP
+
+上传、下载、IP 过滤和日志都需要**真实客户端 IP**。经 nginx / CDN / 负载均衡后，
+TCP 对端只是代理节点的地址，真实 IP 在转发头里。
+
+### Nginx 配置（标准写法，无需改动）
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:3000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # 上传大文件需要
+    client_max_body_size 0;
+    proxy_request_buffering off;
+    proxy_read_timeout 3600s;
+}
+```
+
+### 启用 trustProxy
+
+默认 **`trustProxy: false`** —— 只用 socket 地址，**忽略一切转发头**。
+这是安全默认值：转发头可被客户端伪造，若无脑采信，任何人都能伪造 IP 绕过 IP 过滤。
+
+部署在反向代理之后时，在 `config.json` 里开启，或在 **管理页 → IP 过滤 → 反向代理 / 真实 IP** 里设置：
+
+| 取值 | 行为 | 适用场景 |
+|------|------|----------|
+| `false`（默认） | 只用 socket 地址，转发头一律忽略 | 直接对外暴露、无代理 |
+| `true` | 采信 `X-Forwarded-For` / `X-Real-IP` / `Forwarded` | 确认全站只经代理访问 |
+| `["127.0.0.1", "10.0.0.0/8"]` | 仅当 socket 地址命中列表才采信转发头 | **推荐**：Nginx 同机或内网代理 |
+
+```json
+{ "trustProxy": ["127.0.0.1"] }
+```
+
+列表支持三种写法：精确 IP、CIDR（`10.0.0.0/8`）、连字符范围（`10.0.0.1-10.0.0.50`）。
+
+### 解析优先级
+
+1. `X-Forwarded-For`（`$proxy_add_x_forwarded_for` 逐跳追加；配置了信任列表时，
+   从右往左跳过受信任代理，取第一个不受信地址——这是唯一无法被伪造的取法）
+2. `X-Real-IP`
+3. `Forwarded`（RFC 7239 标准头）
+4. socket `remoteAddress`
+
+所有结果统一归一化：去掉 IPv4-mapped IPv6（`::ffff:1.2.3.4`）、端口（`1.2.3.4:5678`）、
+zone id（`fe80::1%eth0`），保证能与 IP 过滤规则直接比对。
+
+### 生效范围
+
+真实 IP 会用于：**上传**（初始化 / 分块 / 完成日志与入库）、**下载**（详情 / 单文件 / 打包下载日志）、
+**IP 过滤**（上传/下载白名单黑名单）、**管理登录日志**、**代理转发追加的 X-Forwarded-For**。
+
+### 验证
+
+上传或下载一次，看服务端日志里的 `IP=` 字段：
+
+```
+[上传] 初始化成功: ID=..., IP=10.170.5.20     <- 真实客户端
+[上传] 初始化成功: ID=..., IP=127.0.0.1       <- 仍在看 nginx 自己，说明 trustProxy 未开
+```
+
 ## 配置说明
 
 首次启动后会在项目根目录自动生成 `config.json`，主要配置项：
@@ -214,7 +383,9 @@ scripts\uninstall-service.bat  # 卸载服务
   "recursiveArchiveCheck": true,
   "enableVirusDetect": false,
   "sevenZipPath": "C:\\Program Files\\7-Zip\\7z.exe",
+  "unrarPath": "",
   "clamscanPath": "",
+  "trustProxy": ["127.0.0.1"],
   "downloadProxy": { "enabled": false, "baseUrl": "" },
   "ipFilter": {
     "upload": { "enabled": false, "mode": "deny", "list": [] },
@@ -224,6 +395,26 @@ scripts\uninstall-service.bat  # 卸载服务
 ```
 
 > **注意**：启动后请立即修改 `adminPassword`，默认密码为 `admin123`。
+
+**配置项说明**
+
+| 配置项 | 默认 | 说明 |
+|--------|------|------|
+| `port` | `3000` | 监听端口 |
+| `adminPassword` | `admin123` | 管理员密码，务必修改 |
+| `storagePath` | `files` | 文件存储目录 |
+| `retentionHours` | `24` | 文件保留小时数，超时自动清理 |
+| `allowedFileTypes` | 预设 | 各类允许上传的扩展名 |
+| `blockEncryptedArchives` | `true` | 拦截加密压缩包 |
+| `detectArchiveByContent` | `false` | 按魔数判定压缩包，而非仅看扩展名 |
+| `recursiveArchiveCheck` | `false` | 递归检测压缩包内嵌套压缩包 |
+| `enableVirusDetect` | `false` | 启用病毒检测（clamscan + 解压前后对比） |
+| `sevenZipPath` | `""` | 7z 路径，留空按平台在 PATH 查找 |
+| `unrarPath` | `""` | unrar 路径（RAR 必需，7-Zip 26.x 不支持 RAR4） |
+| `clamscanPath` | `""` | clamscan 路径，留空按 PATH 查找 |
+| `trustProxy` | `false` | 是否采信 `X-Forwarded-For` 等转发头，见[反向代理与真实 IP](#反向代理与真实-ip) |
+| `ipFilter` | 关闭 | 上传/下载 IP 白名单或黑名单 |
+| `downloadProxy` | 关闭 | 将上传/下载请求转发到上游代理服务 |
 
 ## 项目结构
 
@@ -275,7 +466,7 @@ file-transmit/
 | GET | `/api/admin/settings` | 获取配置 |
 | PUT | `/api/admin/settings` | 更新配置 |
 | GET | `/api/admin/stats` | 获取统计信息 |
-| GET | `/api/admin/check-tools` | 检查 7z / clamscan 依赖是否就绪 |
+| GET | `/api/admin/check-tools` | 检查 7z / unrar / clamscan 依赖是否就绪 |
 | POST | `/api/upload/files` | 上传文件 |
 | GET | `/api/upload/history` | 查询上传历史 |
 | GET | `/api/upload/validate-ids` | 批量验证文件 ID 有效性 |

@@ -48,7 +48,7 @@ function which(name) {
  * 诊断信息缓存：7z / clamscan 的解析结果与告警每个进程只详细打一次，
  * 后续调用直接复用，避免每次上传都刷屏。
  */
-const _toolCache = { sevenZip: new Map(), clamscan: new Map() };
+const _toolCache = { sevenZip: new Map(), clamscan: new Map(), unrar: new Map() };
 
 /**
  * 判断路径是否为可执行文件。
@@ -94,8 +94,42 @@ function resolveSevenZip(configured) {
   }
 
   logger.warn(
-    `[归档检测] 未找到可用的 7z，加密检测将退化为纯 JS 解析，递归解压与病毒检测被跳过。` +
-    `Linux 安装: apt install p7zip-full 或 apt install 7zip，或在 config.json 中设置 sevenZipPath`
+    `[归档检测] 未找到可用的 7z，加密检测将退化为纯 JS 解析，多数格式的递归解压与病毒检测被跳过。` +
+    `Linux 安装: Debian/Ubuntu apt install p7zip-full；RHEL/Fedora dnf install p7zip p7zip-plugins；` +
+    `Arch pacman -S p7zip。详见 README「系统依赖安装」，或在 config.json 中设置 sevenZipPath`
+  );
+  return _put('');
+}
+
+/**
+ * 解析 unrar 可执行文件路径。
+ *
+ * 7-Zip 26.x 起不再支持原始 RAR（RAR 4.x），遇到这类压缩包只报
+ * 「Cannot open the file as archive」，加密检测、解压、病毒检测全部落空。
+ * Linux 上用 RARLAB 官方 unrar 补上这块：既能列内容与加密状态，也能实际解压，
+ * 配合原有的「解压后文件列表对比」形成完整链路。
+ *
+ * 注意：发行版的 unrar-free 只支持 RAR5，读 RAR4 会报错；要读 RAR4 需 RARLAB 版。
+ */
+function resolveUnrar(configured) {
+  const configuredPath = (configured || '').trim();
+  const cacheKey = configuredPath;
+  if (_toolCache.unrar.has(cacheKey)) return _toolCache.unrar.get(cacheKey);
+  const _put = (v) => { _toolCache.unrar.set(cacheKey, v); return v; };
+
+  if (configuredPath) {
+    if (isExecutable(configuredPath)) return _put(configuredPath);
+    logger.warn(`[归档检测] 配置的 unrar 路径不可用: ${configuredPath}（不存在或无执行权限），回退到 PATH 查找`);
+  }
+
+  for (const c of ['unrar', 'unrar-free']) {
+    const found = which(c);
+    if (found) return _put(found);
+  }
+
+  logger.warn(
+    `[归档检测] 未找到 unrar，原始 RAR（RAR 4.x）将无法检测加密与内容（7-Zip 26.x 不支持 RAR4）。` +
+    `Linux 安装: apt/dnf/pacman 装 RARLAB 版 unrar（unrar-free 仅支持 RAR5），或在 config.json 中设置 unrarPath`
   );
   return _put('');
 }
@@ -119,7 +153,8 @@ function resolveClamscan(configured) {
 
   logger.warn(
     `[病毒检测] 未找到可用的 clamscan，跳过主动杀毒扫描，仅保留「解压后文件列表对比」侧信道检测。` +
-    `Linux 安装: apt install clamav clamav-daemon 并执行 freshclam 更新病毒库`
+    `Linux 安装: Debian/Ubuntu apt install clamav clamav-daemon；RHEL/Fedora dnf install clamav；` +
+    `Arch pacman -S clamav。装完执行 freshclam 更新病毒库`
   );
   return _put('');
 }
@@ -267,15 +302,34 @@ function countFilesRecursive(dirPath) {
  * @param {string} archivePath - 压缩包文件路径
  * @returns {{ files: string[], count: number }|null} 文件列表和数量，失败时返回 null
  */
-function listFilesInArchive(sevenZipPath, archivePath) {
+function listFilesInArchive(sevenZipPath, archivePath, tool = '7z') {
   try {
-    const output = runCmd(sevenZipPath, ['l', '-slt', archivePath], {
+    // unrar 没有 -slt 详细格式，只能用表格输出；这里统一取「去掉自身后的条目名」
+    const args = tool === 'unrar' ? ['l', '-p-', archivePath] : ['l', '-slt', archivePath];
+    const output = runCmd(sevenZipPath, args, {
       timeout: 60000,
       maxBuffer: 50 * 1024 * 1024,
     });
 
     const files = [];
     const lines = output.split('\n');
+
+    if (tool === 'unrar') {
+      // unrar l 的表格行：日期 时间 大小 属性 压缩后 比率 签名 文件名
+      const rowRe = /^\s*(\S{5})\s+\d+\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s+/;
+      for (const line of lines) {
+        const m = line.match(rowRe);
+        if (!m) continue;
+        const rest = line.slice(m[0].length).replace(/^\S+\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s+/, '');
+        const name = rest.trim();
+        if (!name || /^[\-\s]+$/.test(name) || /^\d+$/.test(name)) continue;
+        const base = path.basename(archivePath);
+        if (name === base || name === archivePath) continue;
+        files.push(name);
+      }
+      return { files, count: files.length };
+    }
+
     let currentPath = '';
     let isFolder = false;
 
@@ -1110,6 +1164,37 @@ function readGzipOriginalName(filePath) {
 }
 
 // ============================================================
+// 7z 失败输出分类
+// ============================================================
+
+/**
+ * 7z 对「打不开」的文件有一大类同义报错，且措辞随版本/语言变化：
+ *
+ *   ERROR: xxx.rar
+ *   Cannot open the file as archive
+ *
+ *   Can't open as archive: 1
+ *
+ * 此前只匹配 "Wrong password" / "Cannot open encrypted"，而上面这些**不报密码错**，
+ * 结果走到 `return null` 回退纯 JS 解析：RAR 纯 JS 解析又认不出这个文件，
+ * 于是整条检测链静默跳过，日志上就像「什么都没做」。
+ *
+ * 关键约束：**这类报错不能一律当成加密**。原始 .rar、损坏的 zip、伪装成压缩包的普通文件
+ * 都会打出同样的输出，把它们拦掉会造成大量误杀。这里只给出「可疑」判定，
+ * 并保留 fallback 标记，由调用方叠加纯 JS 检测后再决定是否拦截。
+ *
+ * @returns {{ unopenable: boolean, mentionsPassword: boolean, summary: string }}
+ */
+function classifySevenZipFailure(output) {
+  const text = String(output || '');
+  const mentionsPassword = /wrong password|cannot open encrypted|enter password|encrypted file/i.test(text);
+  const unopenable = /cannot open the file as (\[.*?\] )?archive|can'?t open as archive|is not archive|open error|unsupported method/i.test(text);
+  // 7z 失败输出里反复打印文件名，这里只保留 ERROR 后面的短句，方便日志阅读
+  const firstError = text.split(/\r?\n/).find(l => /error/i.test(l)) || text.trim().split(/\r?\n/)[0] || '';
+  return { unopenable, mentionsPassword, summary: firstError.trim().slice(0, 160) };
+}
+
+// ============================================================
 // 7z 主检测（优先于纯 JS 解析）
 // ============================================================
 
@@ -1130,6 +1215,7 @@ function checkArchiveWith7z(sevenZipPath, filePath) {
   const contents = [];
   let decompressionTested = false;
   let decompressionPassed = false;
+  let sevenZipFailed = false; // 7z 打不开该文件（不等于加密）
 
   // 1. 使用 7z l -slt 列挙文件内容和加密状态
   let listOutput;
@@ -1140,8 +1226,10 @@ function checkArchiveWith7z(sevenZipPath, filePath) {
     });
   } catch (err) {
     const errMsg = (err.stderr || err.stdout || err.message || '').toString();
-    // 部分加密文件在列挙时也会报密码错误
-    if (errMsg.includes('Wrong password') || errMsg.includes('Cannot open encrypted')) {
+    const fail = classifySevenZipFailure(errMsg);
+
+    // 明确报密码错 → 加密无疑
+    if (fail.mentionsPassword) {
       return {
         encrypted: true,
         encryptionConfirmed: true,
@@ -1151,7 +1239,23 @@ function checkArchiveWith7z(sevenZipPath, filePath) {
         decompressionPassed: false,
       };
     }
-    // 7z 无法处理此文件
+
+    // 7z 打不开（无法识别 / 损坏 / 被整体加密伪装）：
+    // 不能当加密拦掉（会误杀损坏文件和伪装文件），但必须留下痕迹，
+    // 并要求调用方继续用纯 JS 再判一次，避免整条检测链静默跳过。
+    if (fail.unopenable) {
+      return {
+        encrypted: false,
+        encryptionConfirmed: false,
+        contents: [],
+        warnings: [`7z 无法打开该文件: ${fail.summary}`, '已转入纯 JS 解析，最终是否拦截以纯 JS 结果为准'],
+        decompressionTested: false,
+        decompressionPassed: false,
+        sevenZipFailed: true,
+      };
+    }
+
+    // 其他失败（权限、超时等）
     return null;
   }
 
@@ -1259,10 +1363,17 @@ function checkArchiveWith7z(sevenZipPath, filePath) {
       const stdOut = (err.stdout || '').toString();
       const combined = stdErr + stdOut;
 
-      if (/Wrong password|Cannot open encrypted|Enter password|Data Error in encrypted file|Cannot open the file as \[ARCHIVE\] archive/i.test(combined)) {
+      const fail = classifySevenZipFailure(combined);
+
+      if (fail.mentionsPassword) {
         // 空密码测试失败说明确实是加密的
         encrypted = true;
         warnings.push('解压测试确认文件已加密');
+      } else if (fail.unopenable) {
+        // 7z 打不开 ≠ 加密：原始 .rar / 损坏文件 / 伪装文件都会走到这里。
+        // 如实记录并标记，交由纯 JS 解析复核，避免误杀也避免静默放过。
+        warnings.push(`解压测试无法打开文件: ${fail.summary}`);
+        sevenZipFailed = true;
       } else if (combined.trim() === '') {
         // 7z 有时不输出任何内容即退出——无法据此判定加密，如实记录，避免假装「未加密」
         warnings.push('解压测试失败且无输出，无法确认加密状态（已按未加密处理，建议检查 7z 权限）');
@@ -1277,11 +1388,12 @@ function checkArchiveWith7z(sevenZipPath, filePath) {
 
   return {
     encrypted,
-    encryptionConfirmed: true,
+    encryptionConfirmed: !sevenZipFailed,
     contents,
     warnings,
     decompressionTested,
     decompressionPassed,
+    sevenZipFailed,
   };
 }
 
@@ -1435,6 +1547,20 @@ function inspectNestedArchiveWith7z(sevenZipPath, archivePath, nestedPath) {
 async function extractAndRecheck(sevenZipPath, archivePath, config, depth = 0) {
   const MAX_RECURSION_DEPTH = 5;
 
+  // RAR 交给 unrar 解压：7-Zip 26.x 不支持原始 RAR，硬用 7z 只会 "Cannot open the file as archive"
+  const isRar = path.extname(archivePath).toLowerCase() === '.rar';
+  const unrarPath = isRar ? resolveUnrar(config.unrarPath) : '';
+  const extractorPath = isRar && unrarPath ? unrarPath : sevenZipPath;
+  const extractorTool = isRar && unrarPath ? 'unrar' : '7z';
+
+  if (isRar && !unrarPath) {
+    logger.warn(`[归档检测] RAR 缺少 unrar，跳过解压/递归/病毒检测: ${path.basename(archivePath)}`);
+    return [{ note: '未安装 unrar，RAR 跳过解压与病毒检测', skipped: true }];
+  }
+  if (!extractorPath) {
+    return [{ note: '无可用解压工具，跳过递归解压检测', skipped: true }];
+  }
+
   if (depth >= MAX_RECURSION_DEPTH) {
     return [{ note: `递归深度已达上限 (${MAX_RECURSION_DEPTH})，跳过解压检测`, skipped: true }];
   }
@@ -1462,7 +1588,10 @@ async function extractAndRecheck(sevenZipPath, archivePath, config, depth = 0) {
       const sizeMB = (stat.size / (1024 * 1024)).toFixed(1);
       logger.log(`[归档检测] 开始解压: ${path.basename(archivePath)} (${sizeMB} MB) → 临时目录`);
 
-      const extractOutput = runCmd(sevenZipPath, ['x', `-o${tempDir}`, '-y', archivePath], {
+      const extractArgs = extractorTool === 'unrar'
+        ? ['x', '-o+', '-p-', archivePath, tempDir + path.sep]
+        : ['x', `-o${tempDir}`, '-y', archivePath];
+      const extractOutput = runCmd(extractorPath, extractArgs, {
         timeout: 120000,
         maxBuffer: 10 * 1024 * 1024,
       });
@@ -1545,7 +1674,7 @@ async function extractAndRecheck(sevenZipPath, archivePath, config, depth = 0) {
         }
       }
 
-      const archiveFileList = listFilesInArchive(sevenZipPath, archivePath);
+      const archiveFileList = listFilesInArchive(extractorPath, archivePath, extractorTool);
 
       if (archiveFileList && archiveFileList.count > 0) {
         const actualFiles = listFilesRecursive(tempDir);
@@ -1632,6 +1761,159 @@ async function extractAndRecheck(sevenZipPath, archivePath, config, depth = 0) {
   }
 
   return findings;
+}
+
+/**
+ * 用 unrar 检测 RAR 压缩包：列挙内容 + 加密状态 + 解压测试。
+ *
+ * 7-Zip 26.x 不支持原始 RAR（RAR 4.x），遇到直接 "Cannot open the file as archive"，
+ * 于是加密检测、递归解压、病毒检测全部落空。unrar 是 RARLAB 官方工具，RAR4/RAR5 都能读。
+ *
+ *   unrar l -p- archive.rar    列内容，-p- 空密码（不弹交互）
+ *   unrar t -p- archive.rar    测试解压，不写盘
+ *
+ * 加密判定：列挙表格的属性列带 `*` / `p` / `P` 即加密，另兜底匹配密码相关报错。
+ */
+function checkRarWithUnrar(unrarPath, filePath) {
+  const warnings = [];
+  let encrypted = false;
+  const contents = [];
+  let decompressionTested = false;
+  let decompressionPassed = false;
+
+  // 1. 列挙内容与加密状态
+  let listOutput;
+  try {
+    listOutput = runCmd(unrarPath, ['l', '-p-', filePath], {
+      timeout: 60000,
+      maxBuffer: 50 * 1024 * 1024,
+    });
+  } catch (err) {
+    const errMsg = (err.stderr || err.stdout || err.message || '').toString();
+
+    // 密码不对 → 整包或条目加密
+    if (/password is incorrect|wrong password|encrypted file|enter password/i.test(errMsg)) {
+      return {
+        encrypted: true,
+        encryptionConfirmed: true,
+        contents: [],
+        warnings: ['unrar 列挙失败，文件已加密保护'],
+        decompressionTested: false,
+        decompressionPassed: false,
+      };
+    }
+
+    // unrar-free 只支持 RAR5，读 RAR4 会报 unsupported / not a RAR archive
+    if (/unsupported|not a rar|crc failed|corrupt/i.test(errMsg)) {
+      warnings.push(`unrar 无法处理该 RAR: ${errMsg.trim().split(/\r?\n/)[0] || errMsg.slice(0, 160)}`);
+      return {
+        encrypted: false,
+        encryptionConfirmed: false,
+        contents: [],
+        warnings,
+        decompressionTested: false,
+        decompressionPassed: false,
+        sevenZipFailed: true,
+      };
+    }
+
+    return null;
+  }
+
+  // 2. 解析 unrar l 的表格输出。典型一行：
+  //    2024-01-01 00:00       12  ...A.  12  12%  password  name.txt
+  //    属性列形如 ...A. / *..A. / ...A*，任意位带 * / p / P 即加密
+  {
+    const lines = listOutput.split(/\r?\n/);
+    const attrRe = /^\s*(\S{5})\s+\d+\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s+/;
+    for (const line of lines) {
+      const m = line.match(attrRe);
+      if (!m) continue;
+      const attrs = m[1];
+      if (/[*pP]/.test(attrs)) encrypted = true;
+
+      // 行首属性之后是「压缩后大小 + 比率」，再往后才是文件名（文件名可含空格）
+      const rest = line.slice(m[0].length).replace(/^\S+\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s+/, '');
+      const name = rest.trim();
+      // 过滤表格残留：汇总行、横线、纯数字行都不算文件
+      if (!name || /^[\-\s]+$/.test(name) || /^\d+$/.test(name)) continue;
+
+      const isArchive = isArchiveExtension(name);
+      contents.push({
+        path: name,
+        isDirectory: name.endsWith('/') || name.endsWith('\\'),
+        isArchive,
+        archiveType: isArchive ? getArchiveTypeByExtension(name) : null,
+      });
+    }
+
+    // 整包加密时属性列可能不出现，兜底再扫一次关键字
+    if (!encrypted && /password is incorrect|encrypted/i.test(listOutput)) {
+      encrypted = true;
+    }
+  }
+
+  // 3. 空密码解压测试，进一步确认加密
+  if (!encrypted) {
+    try {
+      runCmd(unrarPath, ['t', '-p-', filePath], {
+        timeout: 120000,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+      decompressionPassed = true;
+    } catch (err) {
+      const combined = ((err.stderr || '') + (err.stdout || '')).toString();
+      if (/password is incorrect|wrong password|encrypted file/i.test(combined)) {
+        encrypted = true;
+        warnings.push('unrar 解压测试确认文件已加密');
+      } else if (combined.trim() === '') {
+        warnings.push('unrar 解压测试失败且无输出，无法确认加密状态');
+      } else {
+        warnings.push(`unrar 解压测试未通过: ${combined.substring(0, 200)}`);
+      }
+    }
+    decompressionTested = true;
+  } else {
+    warnings.push('文件已加密，跳过解压测试');
+  }
+
+  return {
+    encrypted,
+    encryptionConfirmed: true,
+    contents,
+    warnings,
+    decompressionTested,
+    decompressionPassed,
+  };
+}
+
+/**
+ * 纯 JS 压缩包检查（按类型分派）。
+ * 抽出来是为了在「7z 打不开」时能复用同一套解析，不必再写一遍 switch。
+ *
+ * @param {string} filePath - 压缩包路径
+ * @param {string} archiveType - 已判定的压缩包类型
+ * @returns {{ encrypted: boolean, encryptionConfirmed: boolean, contents: Array, warnings: string[] }}
+ */
+function runJsArchiveCheck(filePath, archiveType) {
+  switch (archiveType) {
+    case 'zip':
+      return checkZipArchive(filePath);
+    case 'rar': {
+      const rarVer = detectRarVersion(filePath);
+      return rarVer === 5 ? checkRar5Archive(filePath) : checkRar4Archive(filePath);
+    }
+    case '7z':
+      return check7zArchive(filePath);
+    case 'tar':
+    case 'gz':
+    case 'bz2':
+    case 'xz':
+    case 'iso':
+      return checkSimpleArchive(filePath, archiveType);
+    default:
+      return { encrypted: false, encryptionConfirmed: false, contents: [], warnings: ['不支持的压缩格式'] };
+  }
 }
 
 /**
@@ -1803,33 +2085,47 @@ async function inspectArchives(folderPath, config) {
         }
       }
 
-      // 3b. 7z 不可用或失败时，回退到纯 JS 解析
-      if (!checkResult) {
-        switch (archiveType) {
-          case 'zip':
-            checkResult = checkZipArchive(filePath);
-            break;
-          case 'rar': {
-            const rarVer = detectRarVersion(filePath);
-            if (rarVer === 5) {
-              checkResult = checkRar5Archive(filePath);
-            } else {
-              checkResult = checkRar4Archive(filePath);
-            }
-            break;
+      // 3a-2. RAR 交给 unrar：7-Zip 26.x 已不支持原始 RAR（RAR 4.x），
+      //        只会报 "Cannot open the file as archive"，此时 unrar 是唯一能读的工具。
+      if (!checkResult && archiveType === 'rar') {
+        const unrarPath = resolveUnrar(config.unrarPath);
+        if (unrarPath) {
+          checkResult = checkRarWithUnrar(unrarPath, filePath);
+          if (checkResult) {
+            used7z = false;
+            fileResult.detectionMethod = 'unrar';
           }
-          case '7z':
-            checkResult = check7zArchive(filePath);
-            break;
-          case 'tar':
-          case 'gz':
-          case 'bz2':
-          case 'xz':
-          case 'iso':
-            checkResult = checkSimpleArchive(filePath, archiveType);
-            break;
-          default:
-            checkResult = { encrypted: false, encryptionConfirmed: false, contents: [], warnings: ['不支持的压缩格式'] };
+        }
+      }
+
+      // 3a'. 7z 打不开该文件（无法识别/损坏/伪装）——这不是加密，但也不能就此放过：
+      //      让纯 JS 解析再判一次，两条路径都认不出时才按「无法确认」处理。
+      let jsFallbackResult = null;
+      if (checkResult && checkResult.sevenZipFailed) {
+        try {
+          jsFallbackResult = runJsArchiveCheck(filePath, archiveType);
+        } catch (e) {
+          jsFallbackResult = null;
+        }
+      }
+
+      // 3b. 7z 不可用或返回 null 时，回退到纯 JS 解析
+      if (!checkResult) {
+        checkResult = runJsArchiveCheck(filePath, archiveType);
+      }
+
+      // 7z 打不开时，把纯 JS 的结论并进来：任一方认为加密即算加密，
+      // 且保留「加密未确认」标记，避免把损坏文件当成加密文件误杀。
+      if (checkResult.sevenZipFailed && jsFallbackResult) {
+        if (jsFallbackResult.encrypted) {
+          checkResult.encrypted = true;
+          checkResult.encryptionConfirmed = jsFallbackResult.encryptionConfirmed;
+          checkResult.warnings.push('纯 JS 解析复核判定为加密');
+        } else {
+          checkResult.warnings.push('纯 JS 解析同样无法确认该文件为加密压缩包，已按非压缩包/损坏文件处理');
+        }
+        if (jsFallbackResult.contents && jsFallbackResult.contents.length > 0 && checkResult.contents.length === 0) {
+          checkResult.contents = jsFallbackResult.contents;
         }
       }
 
@@ -1837,6 +2133,9 @@ async function inspectArchives(folderPath, config) {
       fileResult.encryptionConfirmed = checkResult.encryptionConfirmed;
       fileResult.contents = checkResult.contents || [];
       fileResult.warnings.push(...(checkResult.warnings || []));
+      if (checkResult.sevenZipFailed) {
+        fileResult.sevenZipFailed = true;
+      }
 
       // 记录是否进行了 7z 解压测试
       if (checkResult.decompressionTested !== undefined) {
@@ -1845,6 +2144,8 @@ async function inspectArchives(folderPath, config) {
       }
       if (used7z) {
         fileResult.detectionMethod = '7z';
+      } else if (fileResult.detectionMethod === 'unrar') {
+        // 已在上面标记为 unrar，保持不变
       }
     } catch (err) {
       fileResult.warnings.push(`压缩包解析异常: ${err.message}`);
@@ -1854,8 +2155,10 @@ async function inspectArchives(folderPath, config) {
     //    开启 7z 时：实际解压到临时目录，再对所有解压文件进行检测
     //    未开启 7z 时：仅通过文件名后缀判断嵌套压缩包
     //    开启病毒检测时，即使未开启递归检测也要解压（用于对比文件列表）
+    // RAR 即便 7z 失败，只要 unrar 读出了内容，也要能进入解压/递归/病毒检测
+    const canExtract = sevenZipPath || (fileResult.archiveType === 'rar' && resolveUnrar(config.unrarPath));
     if ((recursiveArchiveCheck || config.enableVirusDetect) && fileResult.contents.length > 0) {
-      if (sevenZipPath && !fileResult.isEncrypted) {
+      if (canExtract && !fileResult.isEncrypted) {
         // 使用 7z 解压后实际检测解压出的文件
         const currentDepth = config._depth || 0;
         fileResult.recursiveFindings = await extractAndRecheck(sevenZipPath, filePath, config, currentDepth);
@@ -1918,13 +2221,21 @@ async function inspectArchives(folderPath, config) {
     for (const f of result.files) {
       if (f.isArchive) methodCount[f.detectionMethod] = (methodCount[f.detectionMethod] || 0) + 1;
     }
+    const openFailed = result.files.filter(f => f.sevenZipFailed).length;
     logger.log(
       `[归档检查] 扫描 ${files.length} 个文件: 压缩包 ${result.archivesFound} 个` +
       ` (7z=${methodCount['7z']}, 魔数=${methodCount.content}, 扩展名=${methodCount.extension})` +
       `, 加密 ${result.encryptedFound} 个` +
+      `, 7z打不开 ${openFailed} 个` +
       `, 7z=${sevenZipPath || '未安装'}` +
       `, clamscan=${config.enableVirusDetect ? (resolveClamscan(config.clamscanPath) || '未安装') : '已关闭'}`
     );
+    if (openFailed > 0) {
+      logger.warn(
+        `[归档检查] ${openFailed} 个文件 7z 无法打开（可能是原始 RAR、损坏文件或伪装文件），` +
+        `已用纯 JS 复核；这类文件无法做递归解压与病毒检测`
+      );
+    }
   }
 
   // 6. 判断是否需要阻止上传（直接上传 + 递归检测到的加密文件）
@@ -2023,6 +2334,16 @@ function checkToolStatus(cfg = {}) {
     warnings.push('缺少 7z 时：加密检测退化为纯 JS 解析，递归解压与病毒检测被跳过');
   }
 
+  const unrarPath = resolveUnrar(cfg.unrarPath);
+  const unrar = {
+    configuredPath: (cfg.unrarPath || '').trim(),
+    resolvedPath: unrarPath || '',
+    available: Boolean(unrarPath),
+  };
+  if (!unrar.available) {
+    warnings.push('未找到 unrar：原始 RAR（RAR 4.x）无法检测加密与内容（7-Zip 26.x 不支持 RAR4）。Linux 安装 RARLAB 版 unrar，unrar-free 仅支持 RAR5');
+  }
+
   const clamscan = {
     configuredPath: (cfg.clamscanPath || '').trim(),
     resolvedPath: clamscanPath || '',
@@ -2046,7 +2367,7 @@ function checkToolStatus(cfg = {}) {
   }
 
   // Linux 下尤其容易出现「二进制在，但运行时因病毒库/权限失败」——统一收口到 warnings
-  return { sevenZip, clamscan, platform: IS_WIN ? 'windows' : 'linux', warnings };
+  return { sevenZip, unrar, clamscan, platform: IS_WIN ? 'windows' : 'linux', warnings };
 }
 
 /**
@@ -2077,10 +2398,11 @@ function verifyClamscanDb(clamscanPath) {
 
 module.exports = {
   inspectArchives,
-  _resetToolCache: () => { _toolCache.sevenZip.clear(); _toolCache.clamscan.clear(); },
+  _resetToolCache: () => { _toolCache.sevenZip.clear(); _toolCache.clamscan.clear(); _toolCache.unrar.clear(); },
   detectArchiveType,
   resolveSevenZip,
   resolveClamscan,
+  resolveUnrar,
   scanWithClamscan,
   checkToolStatus,
 };

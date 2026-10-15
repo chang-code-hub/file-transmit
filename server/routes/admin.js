@@ -11,7 +11,7 @@ const { getStats } = require('../db');
 router.post('/login', (req, res) => {
   const { password } = req.body;
   const configPassword = getConfig('adminPassword');
-  const clientIp = (req.ip || req.connection.remoteAddress || '').replace(/^::ffff:/, '');
+  const clientIp = require('../utils/clientIp').clientIpOf(req);
 
   if (!password || password !== configPassword) {
     logger.log(`[管理] 登录失败: 密码错误, IP=${clientIp}`);
@@ -41,9 +41,11 @@ router.put('/settings', adminAuth, (req, res) => {
     'detectArchiveByContent',
     'recursiveArchiveCheck',
     'sevenZipPath',
+    'unrarPath',
     'enableVirusDetect',
     'clamscanPath',
     'ipFilter',
+    'trustProxy',
     'downloadProxy',
   ];
 
@@ -130,6 +132,7 @@ router.post('/cleanup', adminAuth, (req, res) => {
 router.get('/check-tools', adminAuth, (req, res) => {
   const status = checkToolStatus({
     sevenZipPath: getConfig('sevenZipPath'),
+    unrarPath: getConfig('unrarPath'),
     clamscanPath: getConfig('clamscanPath'),
     enableVirusDetect: getConfig('enableVirusDetect'),
   });

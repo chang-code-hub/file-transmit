@@ -7,6 +7,7 @@ const { getFileById } = require('../db');
 const { isDownloadProxyEnabled } = require('../config');
 const logger = require('../utils/logger');
 const ipFilter = require('../middleware/ipFilter');
+const { clientIpOf } = require('../utils/clientIp');
 
 // Apply IP filter
 router.use(ipFilter('download'));
@@ -40,7 +41,7 @@ function contentDisposition(filename) {
 // Get file detail by ID
 router.get('/:fileId', async (req, res) => {
   const { fileId } = req.params;
-  const clientIp = (req.ip || req.connection.remoteAddress || '').replace(/^::ffff:/, '');
+  const clientIp = clientIpOf(req);
 
   if (!fileId || fileId.length !== 8) {
     logger.log(`[下载] 查询详情请求无效: 非法ID="${fileId}", IP=${clientIp}`);
@@ -89,7 +90,7 @@ router.get('/:fileId', async (req, res) => {
  */
 router.get('/:fileId/zip', async (req, res) => {
   const { fileId } = req.params;
-  const clientIp = (req.ip || req.connection.remoteAddress || '').replace(/^::ffff:/, '');
+  const clientIp = clientIpOf(req);
 
   const file = await getFileById(fileId);
 
@@ -169,7 +170,7 @@ router.get('/:fileId/zip', async (req, res) => {
 // Download a specific file
 router.get('/:fileId/:fileName', async (req, res) => {
   const { fileId, fileName } = req.params;
-  const clientIp = (req.ip || req.connection.remoteAddress || '').replace(/^::ffff:/, '');
+  const clientIp = clientIpOf(req);
 
   const file = await getFileById(fileId);
 

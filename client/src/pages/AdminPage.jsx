@@ -185,6 +185,14 @@ export default function AdminPage() {
     }));
   };
 
+  // trustProxy: false=忽略转发头；true=采信；数组=仅信任列表内的代理
+  const trustProxyMode = (() => {
+    const tp = settings?.trustProxy;
+    if (tp === true) return 'on';
+    if (Array.isArray(tp)) return 'list';
+    return 'off';
+  })();
+
   const updateDownloadProxy = (field, value) => {
     setSettings(prev => ({
       ...prev,
@@ -457,6 +465,22 @@ export default function AdminPage() {
               </div>
             </div>
 
+            <div className="form-group">
+              <label>unrar 可执行文件路径（RAR 必需）</label>
+              <input
+                type="text"
+                value={settings.unrarPath || ''}
+                onChange={e => updateSetting('unrarPath', e.target.value)}
+                placeholder="Linux 留空自动查找 unrar，例如 /usr/bin/unrar"
+              />
+              <div className="hint">
+                <strong>7-Zip 26.x 已不支持原始 RAR（RAR 4.x）</strong>，遇到只会报
+                「Cannot open the file as archive」，加密检测、解压、病毒检测全部落空。
+                需安装 RARLAB 版 unrar（各发行版命令见 README「系统依赖安装」；
+                发行版的 <code>unrar-free</code> 只支持 RAR5）。
+              </div>
+            </div>
+
             <hr style={{ margin: '20px 0', border: 'none', borderTop: '1px solid #e0e0e0' }} />
 
             <div className="form-group" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -532,6 +556,54 @@ export default function AdminPage() {
 
         {tab === 'ipFilter' && (
           <section>
+            <h3 style={{ fontSize: 14, marginBottom: 10, color: '#555' }}>反向代理 / 真实 IP</h3>
+            <div className="hint" style={{ marginBottom: 12 }}>
+              经 nginx 等反向代理时，socket 地址只是代理节点 IP，真实客户端 IP 在
+              <code> X-Forwarded-For</code> / <code> X-Real-IP</code> 头里。
+              <strong>仅当本服务确实在受信任代理之后时才开启</strong>，否则攻击者可伪造这些头绕过 IP 过滤。
+            </div>
+
+            <div className="form-group">
+              <label>是否采信转发头（trustProxy）</label>
+              <select
+                value={trustProxyMode}
+                onChange={e => {
+                  const v = e.target.value;
+                  if (v === 'off') updateSetting('trustProxy', false);
+                  else if (v === 'on') updateSetting('trustProxy', true);
+                  else updateSetting('trustProxy', Array.isArray(settings.trustProxy) ? settings.trustProxy : ['127.0.0.1']);
+                }}
+              >
+                <option value="off">否 —— 只用 socket 地址（默认，防伪造）</option>
+                <option value="on">是 —— 采信转发头（确实在代理之后时）</option>
+                <option value="list">仅信任指定代理 —— 远端地址命中列表才采信</option>
+              </select>
+              <div className="hint">
+                直连部署选「否」；Nginx 同机可选「是」或「仅信任 127.0.0.1」更稳妥。
+              </div>
+            </div>
+
+            {trustProxyMode === 'list' && (
+              <div className="form-group">
+                <label>受信任代理地址（每行一个）</label>
+                <textarea
+                  rows={3}
+                  value={(Array.isArray(settings.trustProxy) ? settings.trustProxy : []).join('\n')}
+                  onChange={e => updateSetting('trustProxy', e.target.value.split('\n').map(x => x.trim()).filter(Boolean))}
+                  placeholder={'127.0.0.1\n10.0.0.0/8\n172.16.0.1'}
+                />
+                <div className="hint">支持 CIDR（10.0.0.0/8）、连字符范围（10.0.0.1-10.0.0.50）、精确 IP。</div>
+              </div>
+            )}
+
+            <div className="hint" style={{ marginTop: 4, marginBottom: 16 }}>
+              你的 nginx 配置已是标准写法，无需改动：<br />
+              <code>proxy_set_header X-Real-IP $remote_addr;</code><br />
+              <code>proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;</code>
+            </div>
+
+            <hr style={{ margin: '20px 0', border: 'none', borderTop: '1px solid #e0e0e0' }} />
+
             <h3 style={{ fontSize: 14, marginBottom: 10, color: '#555' }}>上传页面</h3>
             <div className="form-group" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <input
@@ -677,6 +749,7 @@ function ToolStatusPanel({ password }) {
       {status && (
         <>
           {row('7z', status.sevenZip)}
+          {row('unrar', status.unrar || { available: false, required: true })}
           {row('clamscan', status.clamscan)}
           {status.warnings.length > 0 && (
             <div className="alert alert-warning" style={{ marginTop: 10, marginBottom: 0, fontSize: 12, lineHeight: 1.7 }}>

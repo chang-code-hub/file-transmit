@@ -1,5 +1,6 @@
 const { getConfig } = require('../config');
 const { ipMatch } = require('../utils/ipMatch');
+const { clientIpOf } = require('../utils/clientIp');
 
 /**
  * Check whether a given IP is allowed for a given mode.
@@ -36,7 +37,8 @@ function checkIpAccess(mode, clientIp) {
  */
 function ipFilter(mode) {
   return function (req, res, next) {
-    const clientIp = req.ip || req.connection.remoteAddress || '127.0.0.1';
+    // 经反向代理时取真实客户端 IP，否则 IP 过滤会一直命中代理节点地址而失效
+    const clientIp = clientIpOf(req) || '127.0.0.1';
 
     if (!checkIpAccess(mode, clientIp)) {
       const ipConfig = getConfig('ipFilter');

@@ -31,9 +31,10 @@ const HOP_BY_HOP = new Set([
   'te', 'trailer', 'transfer-encoding', 'upgrade',
 ]);
 
-/** 客户端 IP（IPv4-mapped IPv6 归一化） */
+/** 客户端 IP：经反向代理时取 X-Forwarded-For / X-Real-IP 里的真实客户端 */
 function clientIpOf(req) {
-  return (req.ip || req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
+  const { clientIpOf: resolveIp } = require('../utils/clientIp');
+  return resolveIp(req);
 }
 
 /** 把 Headers 实例或普通对象展开成 [key, value] 列表 */

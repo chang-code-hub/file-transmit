@@ -61,7 +61,7 @@ app.use(userIdMiddleware);
 // IP filter access status (for frontend nav visibility)
 const { checkIpAccess } = require('./middleware/ipFilter');
 app.get('/api/access-status', (req, res) => {
-  const clientIp = req.ip || req.connection.remoteAddress || '127.0.0.1';
+  const clientIp = require('./utils/clientIp').clientIpOf(req) || '127.0.0.1';
   res.json({
     upload: checkIpAccess('upload', clientIp),
     download: checkIpAccess('download', clientIp),
