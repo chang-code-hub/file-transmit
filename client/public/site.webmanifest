@@ -1,0 +1,13 @@
+{
+  "name": "文件传输工具",
+  "short_name": "文件传输",
+  "icons": [
+    { "src": "/icons/icon-96.png", "sizes": "96x96", "type": "image/png" },
+    { "src": "/icons/favicon-32.png", "sizes": "32x32", "type": "image/png" },
+    { "src": "/icons/favicon-16.png", "sizes": "16x16", "type": "image/png" }
+  ],
+  "start_url": "/",
+  "display": "browser",
+  "background_color": "#ffffff",
+  "theme_color": "#0f172a"
+}

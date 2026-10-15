@@ -261,3 +261,16 @@ file-transmit/
 ## 许可
 
 [MIT License](LICENSE)
+
+### 资源署名
+
+站点图标来自 [Icons8](https://icons8.com) 的 3D Fluency 系列，按 [Icons8 许可](https://icons8.com/license) 需署名使用（或购买 Icons8 Pro 免署名）。站内页脚已包含署名链接；若你在其他地方使用这些图标，请保留同样的署名。
+
+资源文件位于 `client/public/icons/`：
+| 文件 | 尺寸 | 用途 |
+|------|------|------|
+| `favicon-16.png` | 16×16 | 浏览器标签页小图标 |
+| `favicon-32.png` | 32×32 | 浏览器标签页图标 / `favicon.png` |
+| `icon-96.png` | 96×96 | `apple-touch-icon` / PWA 图标 |
+
+> 源图标包最大尺寸仅 96×96，故未提供 512×512 图标。

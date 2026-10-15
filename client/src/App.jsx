@@ -51,6 +51,13 @@ export default function App() {
             <Route path="/admin" element={<AdminPage />} />
           </Routes>
         </main>
+        <footer className="app-footer">
+          图标来自{' '}
+          <a href="https://icons8.com" target="_blank" rel="noopener noreferrer">Icons8</a>
+          {' '}（
+          <a href="https://icons8.com/license" target="_blank" rel="noopener noreferrer">许可</a>
+          ）
+        </footer>
       </div>
     </HashRouter>
   );
