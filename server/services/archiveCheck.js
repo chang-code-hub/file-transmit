@@ -1675,7 +1675,9 @@ async function extractAndRecheck(sevenZipPath, archivePath, config, depth = 0) {
   const MAX_RECURSION_DEPTH = 5;
 
   // RAR 交给 unrar 解压：7-Zip 26.x 不支持原始 RAR，硬用 7z 只会 "Cannot open the file as archive"
-  const isRar = path.extname(archivePath).toLowerCase() === '.rar';
+  // 不能只看扩展名——改成 .zip 的 RAR 仍会走 7z 并失败，这里按魔数类型一并识别
+  const detectedType = detectArchiveType(archivePath);
+  const isRar = detectedType === 'rar' || path.extname(archivePath).toLowerCase() === '.rar';
   const unrarPath = isRar ? resolveUnrar(config.unrarPath) : '';
   const extractorPath = isRar && unrarPath ? unrarPath : sevenZipPath;
   const extractorTool = isRar && unrarPath ? 'unrar' : '7z';
@@ -2205,17 +2207,14 @@ async function inspectArchives(folderPath, config) {
       let checkResult = null;
       let used7z = false;
 
-      // 3a. 优先使用 7z 检测
-      if (sevenZipPath) {
-        checkResult = await checkArchiveWith7z(sevenZipPath, filePath);
-        if (checkResult) {
-          used7z = true;
-        }
-      }
-
-      // 3a-2. RAR 交给 unrar：7-Zip 26.x 已不支持原始 RAR（RAR 4.x），
-      //        只会报 "Cannot open the file as archive"，此时 unrar 是唯一能读的工具。
-      if (!checkResult && archiveType === 'rar') {
+      // 3a. RAR 优先交给 unrar。
+      //
+      // 7-Zip 26.x 起不再支持原始 RAR（RAR 4.x），只会报 "Cannot open the file as archive"。
+      // 早先把 unrar 放在 7z 之后当兜底是错的：7z 打不开时 checkArchiveWith7z 返回的是
+      // 一个带 sevenZipFailed 的**结果对象**而不是 null，`if (!checkResult)` 因此永远不成立，
+      // unrar 根本没机会跑，日志里只留下「7z 无法打开」——这正是 RAR 检测失效的原因。
+      // 所以 RAR 一律先走 unrar，7z 仅作其缺失时的回退。
+      if (archiveType === 'rar') {
         const unrarPath = resolveUnrar(config.unrarPath);
         if (unrarPath) {
           checkResult = await checkRarWithUnrar(unrarPath, filePath);
@@ -2226,10 +2225,19 @@ async function inspectArchives(folderPath, config) {
         }
       }
 
+      // 3a-2. 其余格式（以及 RAR 无 unrar 时）用 7z 检测
+      if (!checkResult && sevenZipPath) {
+        checkResult = await checkArchiveWith7z(sevenZipPath, filePath);
+        if (checkResult) {
+          used7z = true;
+        }
+      }
+
       // 3a'. 7z 打不开该文件（无法识别/损坏/伪装）——这不是加密，但也不能就此放过：
       //      让纯 JS 解析再判一次，两条路径都认不出时才按「无法确认」处理。
       let jsFallbackResult = null;
       if (checkResult && checkResult.sevenZipFailed) {
+        // 7z / unrar 都打不开该文件时，纯 JS 再判一次
         try {
           jsFallbackResult = runJsArchiveCheck(filePath, archiveType);
         } catch (e) {
