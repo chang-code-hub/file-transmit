@@ -20,6 +20,74 @@ const IS_WIN = process.platform === 'win32';
  * 执行外部命令（参数数组形式，避免 shell 拼接引号/转义问题，Windows 与 Linux 一致）。
  * 不使用 execSync 字符串拼接，因为路径含空格/中文时 Windows 与 Linux 的引号规则不同。
  */
+/**
+ * 异步执行外部命令（不阻塞事件循环）。
+ *
+ * runCmd 用的是 execFileSync，会**同步阻塞整个 Node 事件循环**——一旦子进程
+ * 卡住（例如 unrar 交互式等待密码、clamscan 挂起），整个后台都会「卡死」，
+ * 所有请求无响应。上传流程里凡是可能长时间运行的解压/扫描，一律走这里。
+ *
+ * @returns {Promise<string>} stdout
+ */
+function runCmdAsync(bin, args, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const { spawn } = require('child_process');
+    const child = spawn(bin, args, {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let out = '';
+    let err = '';
+    let settled = false;
+    const timeout = opts.timeout || 120000;
+    const maxBuffer = opts.maxBuffer || 10 * 1024 * 1024;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { child.kill('SIGKILL'); } catch {}
+      const e = new Error(`命令超时 (${timeout}ms): ${bin}`);
+      e.code = 'ETIMEDOUT';
+      e.stdout = out;
+      e.stderr = err;
+      reject(e);
+    }, timeout);
+
+    child.stdout.on('data', (d) => {
+      out += d.toString();
+      if (out.length > maxBuffer) { try { child.kill('SIGKILL'); } catch {} }
+    });
+    child.stderr.on('data', (d) => {
+      err += d.toString();
+      if (err.length > maxBuffer) { try { child.kill('SIGKILL'); } catch {} }
+    });
+
+    const done = (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (code === 0) return resolve(out);
+      const e = new Error(err || out || `命令失败 (exit=${code}): ${bin}`);
+      e.status = code;
+      e.code = code === null ? 'KILLED' : undefined;
+      e.stdout = out;
+      e.stderr = err;
+      reject(e);
+    };
+
+    child.on('error', (e) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      e.stdout = out;
+      e.stderr = err;
+      reject(e);
+    });
+    child.on('close', done);
+  });
+}
+
 function runCmd(bin, args, opts = {}) {
   return execFileSync(bin, args, {
     encoding: 'utf-8',
@@ -169,6 +237,46 @@ function resolveClamscan(configured) {
  * @param {string} targetPath - 待扫描目录
  * @returns {{ infected: number, infectedFiles: string[], scanned: number, raw: string, ok: boolean }}
  */
+/**
+ * 异步版 clamscan 扫描。同步版会阻塞事件循环，clamscan 一慢整个后台就假死。
+ */
+async function scanWithClamscanAsync(clamscanPath, targetPath) {
+  const result = { infected: 0, infectedFiles: [], scanned: 0, raw: '', ok: false };
+  if (!clamscanPath) return result;
+
+  try {
+    result.raw = await runCmdAsync(clamscanPath, ['--recursive', '--infected', '--no-summary', targetPath], {
+      timeout: 300000,
+      maxBuffer: 50 * 1024 * 1024,
+    });
+    result.ok = true;
+  } catch (err) {
+    const code = err.status;
+    const errCode = err.code;
+    const stdout = (err.stdout || '').toString();
+    const stderr = (err.stderr || '').toString();
+
+    if (code === 1) {
+      result.raw = stdout;
+      result.ok = true;
+    } else {
+      const reason = errCode ? `无法启动 (${errCode})` : `exit=${code}${stderr ? ': ' + stderr.trim().slice(0, 200) : ''}`;
+      logger.error(`[病毒检测] clamscan 执行失败 ${reason}`);
+      result.raw = stdout + stderr;
+      return result;
+    }
+  }
+
+  for (const line of String(result.raw || '').split(/\r?\n/)) {
+    const m = line.match(/^(.*): (.+) FOUND\s*$/);
+    if (m) {
+      result.infected++;
+      result.infectedFiles.push(`${m[1]} -> ${m[2]}`);
+    }
+  }
+  return result;
+}
+
 function scanWithClamscan(clamscanPath, targetPath) {
   const result = { infected: 0, infectedFiles: [], scanned: 0, raw: '', ok: false };
   if (!clamscanPath) return result;
@@ -432,6 +540,25 @@ function readBytes(fd, offset, length) {
 /**
  * 检查文件名是否具有压缩文件扩展名
  */
+/**
+ * 判断 7z / unrar 列挙出的条目是不是压缩包自身。
+ *
+ * 7z 可能输出 basename（README.zip）也可能输出完整路径（/data/x/README.zip），
+ * 而调用方拿到的 filePath 是绝对路径，直接 `currentPath !== filePath` 比对必然不相等，
+ * 于是压缩包自己被当成内部文件——递归解压因此被跳过，整条检测链静默失效。
+ * 这里按 basename + 归一化路径两种口径判断。
+ */
+function isSelfEntry(entryPath, archivePath) {
+  if (!entryPath) return true;
+  const norm = (p) => String(p).replace(/\\/g, '/');
+  const strip = (p) => norm(p).replace(/\/+$/, '');
+  const a = strip(entryPath);
+  const b = strip(archivePath);
+  if (a === b) return true;
+  if (path.basename(a) === path.basename(b) && !a.includes('/')) return true;
+  return false;
+}
+
 function isArchiveExtension(filename) {
   const ext = path.extname(unwrapCompoundName(filename)).toLowerCase();
   return ARCHIVE_EXTENSIONS.has(ext);
@@ -1209,7 +1336,7 @@ function classifySevenZipFailure(output) {
  * @param {string} filePath - 压缩包文件路径
  * @returns {object|null} 检测结果，失败时返回 null（调用方应回退到纯 JS 解析）
  */
-function checkArchiveWith7z(sevenZipPath, filePath) {
+async function checkArchiveWith7z(sevenZipPath, filePath) {
   const warnings = [];
   let encrypted = false;
   const contents = [];
@@ -1220,7 +1347,7 @@ function checkArchiveWith7z(sevenZipPath, filePath) {
   // 1. 使用 7z l -slt 列挙文件内容和加密状态
   let listOutput;
   try {
-    listOutput = runCmd(sevenZipPath, ['l', '-slt', filePath], {
+    listOutput = await runCmdAsync(sevenZipPath, ['l', '-slt', filePath], {
       timeout: 60000,
       maxBuffer: 50 * 1024 * 1024,
     });
@@ -1293,7 +1420,7 @@ function checkArchiveWith7z(sevenZipPath, filePath) {
       // 遇到 "Path = " 开始一个新条目
       if (line.startsWith('Path = ')) {
         // 保存上一个条目
-        if (currentPath && currentPath !== filePath) {
+        if (currentPath && !isSelfEntry(currentPath, filePath)) {
           const isArchive = isArchiveExtension(currentPath);
           contents.push({
             path: currentPath,
@@ -1329,7 +1456,7 @@ function checkArchiveWith7z(sevenZipPath, filePath) {
     }
 
     // 保存最后一个条目
-    if (currentPath && currentPath !== filePath) {
+    if (currentPath && !isSelfEntry(currentPath, filePath)) {
       const isArchive = isArchiveExtension(currentPath);
       contents.push({
         path: currentPath,
@@ -1353,7 +1480,7 @@ function checkArchiveWith7z(sevenZipPath, filePath) {
       warnings.push('当前 7z 帮助未声明空密码语法，已使用 -p- 进行解压测试');
     }
     try {
-      runCmd(sevenZipPath, testArgs, {
+      await runCmdAsync(sevenZipPath, testArgs, {
         timeout: 120000,
         maxBuffer: 10 * 1024 * 1024,
       });
@@ -1591,7 +1718,8 @@ async function extractAndRecheck(sevenZipPath, archivePath, config, depth = 0) {
       const extractArgs = extractorTool === 'unrar'
         ? ['x', '-o+', '-p-', archivePath, tempDir + path.sep]
         : ['x', `-o${tempDir}`, '-y', archivePath];
-      const extractOutput = runCmd(extractorPath, extractArgs, {
+      // 必须异步：同步会阻塞事件循环，子进程一卡整个后台就卡死
+      const extractOutput = await runCmdAsync(extractorPath, extractArgs, {
         timeout: 120000,
         maxBuffer: 10 * 1024 * 1024,
       });
@@ -1655,7 +1783,7 @@ async function extractAndRecheck(sevenZipPath, archivePath, config, depth = 0) {
       if (clamscanPath) {
         const depthTag = depth > 0 ? `[深度${depth}] ` : '';
         logger.log(`[病毒检测] ${depthTag}开始 clamscan 扫描: ${path.basename(archivePath)}`);
-        const scan = scanWithClamscan(clamscanPath, tempDir);
+        const scan = await scanWithClamscanAsync(clamscanPath, tempDir);
 
         if (scan.ok && scan.infected > 0) {
           const maxShow = 20;
@@ -1774,7 +1902,7 @@ async function extractAndRecheck(sevenZipPath, archivePath, config, depth = 0) {
  *
  * 加密判定：列挙表格的属性列带 `*` / `p` / `P` 即加密，另兜底匹配密码相关报错。
  */
-function checkRarWithUnrar(unrarPath, filePath) {
+async function checkRarWithUnrar(unrarPath, filePath) {
   const warnings = [];
   let encrypted = false;
   const contents = [];
@@ -1784,7 +1912,7 @@ function checkRarWithUnrar(unrarPath, filePath) {
   // 1. 列挙内容与加密状态
   let listOutput;
   try {
-    listOutput = runCmd(unrarPath, ['l', '-p-', filePath], {
+    listOutput = await runCmdAsync(unrarPath, ['l', '-p-', filePath], {
       timeout: 60000,
       maxBuffer: 50 * 1024 * 1024,
     });
@@ -1856,7 +1984,7 @@ function checkRarWithUnrar(unrarPath, filePath) {
   // 3. 空密码解压测试，进一步确认加密
   if (!encrypted) {
     try {
-      runCmd(unrarPath, ['t', '-p-', filePath], {
+      await runCmdAsync(unrarPath, ['t', '-p-', filePath], {
         timeout: 120000,
         maxBuffer: 10 * 1024 * 1024,
       });
@@ -2079,7 +2207,7 @@ async function inspectArchives(folderPath, config) {
 
       // 3a. 优先使用 7z 检测
       if (sevenZipPath) {
-        checkResult = checkArchiveWith7z(sevenZipPath, filePath);
+        checkResult = await checkArchiveWith7z(sevenZipPath, filePath);
         if (checkResult) {
           used7z = true;
         }
@@ -2090,7 +2218,7 @@ async function inspectArchives(folderPath, config) {
       if (!checkResult && archiveType === 'rar') {
         const unrarPath = resolveUnrar(config.unrarPath);
         if (unrarPath) {
-          checkResult = checkRarWithUnrar(unrarPath, filePath);
+          checkResult = await checkRarWithUnrar(unrarPath, filePath);
           if (checkResult) {
             used7z = false;
             fileResult.detectionMethod = 'unrar';
@@ -2157,9 +2285,10 @@ async function inspectArchives(folderPath, config) {
     //    开启病毒检测时，即使未开启递归检测也要解压（用于对比文件列表）
     // RAR 即便 7z 失败，只要 unrar 读出了内容，也要能进入解压/递归/病毒检测
     const canExtract = sevenZipPath || (fileResult.archiveType === 'rar' && resolveUnrar(config.unrarPath));
-    if ((recursiveArchiveCheck || config.enableVirusDetect) && fileResult.contents.length > 0) {
+    // 不再要求 contents.length > 0：列挙失败/为空时若直接跳过，解压与病毒检测会静默失效
+    if ((recursiveArchiveCheck || config.enableVirusDetect) && canExtract && !fileResult.isEncrypted) {
       if (canExtract && !fileResult.isEncrypted) {
-        // 使用 7z 解压后实际检测解压出的文件
+        // 使用 7z / unrar 解压后实际检测解压出的文件
         const currentDepth = config._depth || 0;
         fileResult.recursiveFindings = await extractAndRecheck(sevenZipPath, filePath, config, currentDepth);
 
@@ -2186,6 +2315,9 @@ async function inspectArchives(folderPath, config) {
           delete fileResult.recursiveFindings._blocked;
           delete fileResult.recursiveFindings._blockReasons;
         }
+      } else if (!canExtract && (recursiveArchiveCheck || config.enableVirusDetect)) {
+        logger.warn(`[归档检测] 缺少 7z/unrar，无法解压 ${path.basename(filePath)}，跳过递归与病毒检测`);
+        fileResult.recursiveFindings = [];
       } else {
         // 仅通过文件名后缀判断（无 7z 或文件已加密无法解压）
         fileResult.recursiveFindings = recursiveInspect(
