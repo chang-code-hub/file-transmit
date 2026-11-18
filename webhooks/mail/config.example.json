@@ -1,0 +1,23 @@
+{
+  "listen": {
+    "host": "0.0.0.0",
+    "port": 8090
+  },
+  "secret": "",
+  "dedupe_seconds": 300,
+  "subject_template": "【文件传输】新上传 {fileId}（{fileCount} 个文件，{totalSize}）",
+  "smtp": {
+    "host": "smtp.example.com",
+    "port": 465,
+    "ssl": true,
+    "starttls": false,
+    "user": "notify@example.com",
+    "password": "change-me",
+    "from_addr": "文件传输工具 <notify@example.com>",
+    "reply_to": "",
+    "to": [
+      "alice@example.com",
+      "bob@example.com"
+    ]
+  }
+}

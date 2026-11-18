@@ -201,6 +201,43 @@ async function deleteFileRecordById(id) {
   await run('DELETE FROM file_records WHERE id = ?', [id]);
 }
 
+/**
+ * 列出文件（服务端调用方用，例如 Jenkins 按时间拉取待下载列表）。
+ *
+ * 与 getFilesByUserId 的区别：不按 cookie 用户过滤，且支持 since / 分页。
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.since]  只返回 createdAt >= since（毫秒）
+ * @param {number} [opts.limit]  默认 50，上限 500
+ * @param {number} [opts.offset] 默认 0
+ * @returns {Promise<Array>} 与 getFileById 同结构（含 records）
+ */
+async function listFiles(opts = {}) {
+  const since = Number(opts.since) > 0 ? Number(opts.since) : 0;
+  const limit = Math.min(Math.max(Number(opts.limit) || 50, 1), 500);
+  const offset = Math.max(Number(opts.offset) || 0, 0);
+
+  const params = [];
+  let where = '';
+  if (since) {
+    where = ' WHERE created_at >= ?';
+    params.push(since);
+  }
+  const sql = 'SELECT * FROM files' + where + ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+  params.push(limit, offset);
+
+  const rows = await all(sql, params);
+  const result = [];
+  for (const f of rows) {
+    const records = await all('SELECT * FROM file_records WHERE file_id = ?', [f.id]);
+    result.push({
+      ...normalizeFileRow(f),
+      records: records.map(normalizeRecordRow),
+    });
+  }
+  return result;
+}
+
 async function getAllFiles() {
   const rows = await all('SELECT * FROM files');
   return rows.map(normalizeFileRow);
@@ -230,6 +267,7 @@ module.exports = {
   addFileRecord,
   getFileById,
   getFilesByUserId,
+  listFiles,
   validateFileIds,
   deleteExpiredFiles,
   getAllFileRecords,

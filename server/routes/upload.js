@@ -6,11 +6,12 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const { getConfig } = require('../config');
-const { createFile, addFileRecord, getFilesByUserId, validateFileIds } = require('../db');
+const { createFile, addFileRecord, getFileById, getFilesByUserId, validateFileIds } = require('../db');
 const ipFilter = require('../middleware/ipFilter');
 const logger = require('../utils/logger');
 
 const { inspectArchives } = require('../services/archiveCheck');
+const { resolvePublicOrigin, buildPayload, sendWebhooks } = require('../services/webhook');
 const { clientIpOf } = require('../utils/clientIp');
 
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB per chunk
@@ -196,6 +197,41 @@ router.post('/chunk', (req, res) => {
     }
   });
 });
+
+/**
+ * 上传完成后发 webhook（fire-and-forget）。
+ * 重新读库拿到刚写入的文件行与附件记录，组装负载后异步发送；
+ * 未配置或发送失败都只记日志，不影响上传结果。
+ *
+ * @param {object} p
+ * @param {string} p.fileId
+ * @param {Array}  p.succeededFiles
+ * @param {Array}  p.failedFiles
+ * @param {object} p.req
+ */
+async function notifyWebhook({ fileId, succeededFiles, failedFiles, req }) {
+  try {
+    const list = getConfig('webhooks') || [];
+    if (!list.some((w) => w && w.enabled && String(w.url || '').trim())) return;
+
+    const row = await getFileById(fileId);
+    if (!row) return;
+
+    const payload = buildPayload({
+      file: row,
+      records: row.records || [],
+      succeededFiles,
+      failedFiles,
+      origin: resolvePublicOrigin(req),
+      config: getConfig(),
+      req,
+    });
+    // 并发广播到所有已启用的 webhook；单个失败只记日志，不影响其它，也不影响响应
+    await sendWebhooks(payload);
+  } catch (err) {
+    logger.error(`[Webhook] 发送异常: ID=${fileId}, ${err.message}`);
+  }
+}
 
 /**
  * POST /api/upload/complete
@@ -399,6 +435,15 @@ router.post('/complete', async (req, res) => {
         ? `上传部分成功（${assembledFiles.length}/${manifest.files.length}），文件 ID: ${fileId}`
         : `上传成功，文件 ID: ${fileId}`,
       archiveResults: archiveReport ? archiveReport.files : [],
+    });
+
+    // Webhook：上传成功后广播给所有已启用的 webhook，带文件 ID + 附件清单（含下载链接）。
+    // 必须放在 res.json 之后、且不 await —— 回调慢/挂掉都不能拖住上传响应。
+    notifyWebhook({
+      fileId,
+      succeededFiles: assembledFiles.map(f => ({ name: f.originalName, size: f.size })),
+      failedFiles: skippedFiles.length > 0 ? skippedFiles : [],
+      req,
     });
   } catch (err) {
     logger.error(`[上传] 完成失败: ${err.message}`);

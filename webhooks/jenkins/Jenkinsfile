@@ -1,0 +1,143 @@
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        timeout(time: 30, unit: 'MINUTES')
+    }
+
+    tools {
+        // 节点上装的 Python 名称按实际填，例如 python3
+        // 没有 tools 块也可以，下面直接用 PY 环境变量覆盖
+    }
+
+    environment {
+        // 下载根目录：脚本会在这里面用 fileId 建文件夹
+        BASE_DIR    = '/data/file-transmit'
+        // 脚本与配置所在目录（Jenkins 上 checkout 下来的工作区）
+        SCRIPT_DIR  = "${WORKSPACE}/webhooks/jenkins"
+        CONFIG      = "${WORKSPACE}/webhooks/jenkins/config.json"
+        // 解释器：装了 python3 就用 python3，否则用 python
+        PY          = 'python3'
+        // Generic Webhook Trigger 传下来的 body（由插件注入为环境变量）
+        PAYLOAD_FILE = "${WORKSPACE}/webhook-body.json"
+    }
+
+    // 从文件传输工具推来的 webhook 触发。
+    // 插件：Generic Webhook Trigger Plugin
+    //   Post content parameter: name=fileId  expression=$.fileId  (JSONPath)
+    //   可选 Content type: application/json
+    // 若你的 payload 套了一层（如 {data:{fileId:...}}），改 JSONPath 即可，
+    // 例如 $.data.fileId；或留空，交给 extract_file_id.py 兜底解析。
+    triggers {
+        GenericTrigger(
+            genericVariables: [
+                [key: 'fileId', value: '$.fileId', expressionType: 'JSONPath', defaultValue: '']
+            ],
+            token: 'file-transmit-download',   // webhook 地址里的 ?token= 必须一致
+            printPostContent: true,
+            printContributedVariables: true,
+            causeString: '文件传输工具新上传: $fileId',
+            pendingCallouts: []
+        )
+    }
+
+    stages {
+        stage('准备') {
+            steps {
+                script {
+                    // 解释器探测：环境里的 PY 允许用 job 参数覆盖
+                    def probe = sh(returnStatus: true, script: "${PY} --version >/dev/null 2>&1")
+                    if (probe != 0) {
+                        PY = 'python'
+                        probe = sh(returnStatus: true, script: "${PY} --version >/dev/null 2>&1")
+                        if (probe != 0) {
+                            error '找不到 python / python3，请在 Jenkins 节点安装 Python 3.7+'
+                        }
+                    }
+                    sh "${PY} --version"
+                }
+                // config.json 通常不进版本库（含 download_token），用 Jenkins 凭据下发
+                withCredentials([file(credentialsId: 'file-transmit-jenkins-config',
+                                      variable: 'FT_CONFIG')]) {
+                    sh 'mkdir -p "$SCRIPT_DIR" && cp "$FT_CONFIG" "$CONFIG"'
+                }
+                sh 'chmod 600 "$CONFIG" || true'
+            }
+        }
+
+        stage('解析 fileId') {
+            steps {
+                script {
+                    // 优先用插件注入的 $fileId；取不到就用整包 body 让脚本自己找
+                    def fid = ''
+                    if (env.fileId?.trim()) {
+                        fid = env.fileId.trim().toUpperCase()
+                    } else if (env.rawRequest?.trim()) {
+                        writeFile file: env.PAYLOAD_FILE, text: env.rawRequest
+                    }
+                    if (fid) {
+                        echo "webhook 带来的 fileId = ${fid}"
+                        env.TARGET_FILE_ID = fid
+                    } else {
+                        def out = sh(
+                            returnStdout: true,
+                            script: "${PY} \"${SCRIPT_DIR}/extract_file_id.py\" --env --payload-file \"${PAYLOAD_FILE}\" || true"
+                        ).trim()
+                        if (!out) {
+                            // 手动触发 / 定时补跑时走这条：下载最近一段时间的
+                            env.TARGET_FILE_ID = ''
+                            echo '没拿到 fileId，改为按 --since 拉取最近的文件'
+                        } else {
+                            env.TARGET_FILE_ID = out.split('\n').last().trim()
+                            echo "从 body 解析出 fileId = ${env.TARGET_FILE_ID}"
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('下载') {
+            steps {
+                script {
+                    def common = "--config \"${CONFIG}\" --base-dir \"${BASE_DIR}\" --json"
+                    def cmd
+                    if (env.TARGET_FILE_ID) {
+                        // 有 fileId：只下这一个，落到 <BASE_DIR>/<fileId>/
+                        cmd = "${PY} \"${SCRIPT_DIR}/download.py\" ${common} --id ${env.TARGET_FILE_ID}"
+                    } else {
+                        // 没有 fileId（手动/定时）：拉最近 1 小时内上传的
+                        cmd = "${PY} \"${SCRIPT_DIR}/download.py\" ${common} --since ${env.SINCE ?: '1h'}"
+                    }
+                    def code = sh(returnStatus: true, script: cmd)
+                    if (code != 0) {
+                        error "下载任务失败，退出码 ${code}"
+                    }
+                }
+            }
+        }
+
+        stage('汇报') {
+            steps {
+                echo "下载完成，目录: ${BASE_DIR}/${env.TARGET_FILE_ID ?: '(按时间批量)'}"
+                sh 'ls -la "$BASE_DIR" 2>/dev/null || true'
+                sh 'find "$BASE_DIR" -type f 2>/dev/null | head -50 || true'
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "文件下载成功: ${env.TARGET_FILE_ID ?: '(批量)'}"
+        }
+        failure {
+            echo '文件下载失败，请检查：download_token 是否正确、base_url 是否可达、文件是否已过期'
+        }
+        always {
+            // 清掉 body 与配置，避免 token 落在工作区里
+            sh 'rm -f "$PAYLOAD_FILE" "$CONFIG" 2>/dev/null || true'
+        }
+    }
+}

@@ -14,3 +14,8 @@ test-virus/
 data.duckdb.wal
 data.duckdb
 file-transmit.zip
+
+# webhook 接收端的本地配置（含 SMTP 密码 / 下载令牌）
+webhooks/mail/config.json
+webhooks/jenkins/config.json
+webhooks/**/__pycache__/

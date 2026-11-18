@@ -3,7 +3,7 @@ const router = express.Router();
 const adminAuth = require('../middleware/auth');
 const logger = require('../utils/logger');
 const { runCleanup } = require('../services/cleanup');
-const { getConfig, updateConfig, normalizeProxyBaseUrl } = require('../config');
+const { getConfig, updateConfig, normalizeProxyBaseUrl, isIpFilterActive, validateWebhook } = require('../config');
 const { checkToolStatus } = require('../services/archiveCheck');
 const { getStats } = require('../db');
 
@@ -27,6 +27,9 @@ router.get('/settings', adminAuth, (req, res) => {
   // Don't expose the actual password in response
   const settings = { ...getConfig() };
   delete settings.adminPassword;
+  // 只回传「是否是自动生成的」布尔值，口令本身永不下发
+  settings.adminPasswordIsGenerated = !!getConfig('adminPasswordIsGenerated');
+  settings.ipFilterEnabled = isIpFilterActive();
   res.json(settings);
 });
 
@@ -46,29 +49,79 @@ router.put('/settings', adminAuth, (req, res) => {
     'clamscanPath',
     'ipFilter',
     'trustProxy',
+    'uploadProxy',
     'downloadProxy',
+    'webhooks',
+    'webhookPublicUrl',
+    'webhookTimeoutMs',
+    'downloadToken',
   ];
 
   const updates = {};
 
+  // 代理转发（两路独立）与 webhook 列表：需逐项校验后再落盘
+  const PROXY_KEYS = ['uploadProxy', 'downloadProxy'];
+  const OBJECT_KEYS = [...PROXY_KEYS, 'webhooks', 'webhookPublicUrl', 'webhookTimeoutMs', 'downloadToken'];
+
   for (const key of allowedKeys) {
-    if (key === 'downloadProxy') continue;
+    if (OBJECT_KEYS.includes(key)) continue;
     if (req.body[key] !== undefined) {
       updates[key] = req.body[key];
     }
   }
 
-  // 代理转发: normalize and validate before persisting
-  if (req.body.downloadProxy !== undefined) {
-    const raw = req.body.downloadProxy || {};
+  // webhook 列表：可配多个，逐个校验；启用的那条地址必须是合法 http(s) URL
+  if (req.body.webhooks !== undefined) {
+    const raw = req.body.webhooks;
+    if (!Array.isArray(raw)) {
+      return res.status(400).json({ error: 'Webhooks 必须是数组' });
+    }
+    if (raw.length > 20) {
+      return res.status(400).json({ error: '最多只能配置 20 个 Webhook' });
+    }
+    const list = [];
+    for (let idx = 0; idx < raw.length; idx++) {
+      const v = validateWebhook(raw[idx]);
+      if (!v.ok) {
+        return res.status(400).json({ error: `第 ${idx + 1} 个 Webhook: ${v.error}` });
+      }
+      list.push(v.value);
+    }
+    updates.webhooks = list;
+  }
+
+  // webhook 全局项：对外地址 + 超时
+  if (req.body.webhookPublicUrl !== undefined) {
+    updates.webhookPublicUrl = String(req.body.webhookPublicUrl || '').trim().replace(/\/+$/, '');
+    if (updates.webhookPublicUrl) {
+      let u;
+      try { u = new URL(updates.webhookPublicUrl); } catch { u = null; }
+      if (!u || (u.protocol !== 'http:' && u.protocol !== 'https:')) {
+        return res.status(400).json({ error: '对外访问地址无效，需为 http(s):// 开头的合法 URL' });
+      }
+    }
+  }
+  if (req.body.webhookTimeoutMs !== undefined) {
+    const t = Number(req.body.webhookTimeoutMs);
+    updates.webhookTimeoutMs = Number.isFinite(t) && t > 0 ? Math.min(t, 60000) : 10000;
+  }
+  // 下载令牌：留空 = 关闭（Jenkins 必须配这个才能调下载接口）
+  if (req.body.downloadToken !== undefined) {
+    updates.downloadToken = String(req.body.downloadToken || '').trim();
+  }
+
+  for (const key of PROXY_KEYS) {
+    if (req.body[key] === undefined) continue;
+    const raw = req.body[key] || {};
     const baseUrl = normalizeProxyBaseUrl(raw.baseUrl);
     const enabled = !!raw.enabled;
 
     if (enabled && !baseUrl) {
-      return res.status(400).json({ error: '代理地址无效，需为 http(s):// 开头的合法 URL' });
+      const label = key === 'uploadProxy' ? '上传' : '下载';
+      return res.status(400).json({ error: `${label}代理地址无效，需为 http(s):// 开头的合法 URL` });
     }
 
-    updates.downloadProxy = { enabled, baseUrl };
+    updates[key] = { enabled, baseUrl };
   }
 
   // Handle password change separately
@@ -81,6 +134,9 @@ router.put('/settings', adminAuth, (req, res) => {
   const newConfig = updateConfig(updates);
   const response = { ...newConfig };
   delete response.adminPassword;
+  response.adminPasswordIsGenerated = !!getConfig('adminPasswordIsGenerated');
+  // 计算出来的只读状态，让前端保存后立刻拿到最新值
+  response.ipFilterEnabled = isIpFilterActive();
 
   const portChanged = updates.port !== undefined && updates.port !== oldPort;
 
@@ -89,6 +145,8 @@ router.put('/settings', adminAuth, (req, res) => {
   }
   if (updates.adminPassword) {
     logger.log('[管理] 管理员密码已更改');
+    // 改过之后就不再是「自动生成」状态，管理页据此不再显示首次登录提示
+    updateConfig({ adminPasswordIsGenerated: false });
   }
 
   res.json({ success: true, settings: response, portChanged });

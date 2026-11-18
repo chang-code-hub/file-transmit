@@ -4,7 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const archiver = require('archiver');
 const { getFileById } = require('../db');
-const { isDownloadProxyEnabled } = require('../config');
+const { isUploadProxyEnabled, isDownloadProxyEnabled } = require('../config');
 const logger = require('../utils/logger');
 const ipFilter = require('../middleware/ipFilter');
 const { clientIpOf } = require('../utils/clientIp');
@@ -70,7 +70,9 @@ router.get('/:fileId', async (req, res) => {
     expiresAt: file.expires_at,
     uploaderIp: file.uploader_ip,
     userAgent: file.uploader_ua,
+    // 两路代理分开：上传走不走代理对前端无影响，这里只报下载那一段
     downloadProxyEnabled: isDownloadProxyEnabled(),
+    uploadProxyEnabled: isUploadProxyEnabled(),
     zipUrl: buildZipUrl(file.id),
     fileCount: file.records.length,
     files: file.records.map(r => ({

@@ -111,5 +111,16 @@
   "downloadProxy": {
     "enabled": false,
     "baseUrl": ""
-  }
+  },
+  "uploadProxy": {
+    "enabled": false,
+    "baseUrl": ""
+  },
+  "unrarPath": "",
+  "trustProxy": false,
+  "clamscanPath": "",
+  "webhooks": [],
+  "webhookPublicUrl": "",
+  "webhookTimeoutMs": 10000,
+  "downloadToken": ""
 }

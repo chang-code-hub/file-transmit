@@ -1,29 +1,25 @@
 /**
  * 反向代理中间件。
  *
- * 启用后只把 /api/upload 与 /api/download 的请求原样转发到远程代理服务，
- * 本机不查库、不读文件。/api/admin、/api/access-status 等管理接口始终走本机。
+ * 上传与下载各有一路代理，**可以只配其中一个**：
+ *   - uploadProxy   -> /api/upload/*
+ *   - downloadProxy -> /api/download/*
+ * 只启用一路时，另一路走本机实现（本地 DuckDB + 本地文件）。
+ * /api/admin、/api/access-status 等管理接口始终走本机。
  * 拓扑：
  *   浏览器 -> 本服务(/api) -> 远程代理服务(/api) -> 存储/数据库
  * 因此 baseUrl 填到“/api 的上一层”，转发时自动补 /api + 原始路径。
  *
- * 例：baseUrl=http://host/repository
+ * 例：uploadProxy.baseUrl = http://host/repository
  *   GET  /api/upload/history  ->  http://host/repository/api/upload/history
  *   POST /api/upload/init     ->  http://host/repository/api/upload/init
+ *   GET  /api/download/ABCD   ->  downloadProxy 未启用，本机处理
  *   GET  /api/admin/stats     ->  本机处理，不转发
  */
 const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
-const { getConfig, normalizeProxyBaseUrl, isDownloadProxyEnabled } = require('../config');
+const { resolveProxyFor } = require('../config');
 const logger = require('../utils/logger');
-
-/** 参与代理转发的路径前缀 */
-const PROXY_PREFIXES = ['/api/upload', '/api/download'];
-
-function shouldProxy(originalUrl) {
-  const pathname = String(originalUrl || '').split('?')[0];
-  return PROXY_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + '/'));
-}
 
 /** 不该被转发的 hop-by-hop 头 */
 const HOP_BY_HOP = new Set([
@@ -86,10 +82,10 @@ function formatBytes(n) {
 }
 
 /** 记录一次代理转发的响应结果 */
-function logResponse(req, clientIp, target, status, bytes, startedAt) {
+function logResponse(req, clientIp, target, status, bytes, startedAt, tag) {
   const ms = Date.now() - startedAt;
   const line =
-    `[代理] <-- ${status} ${req.method} ${req.originalUrl}` +
+    `${tag || '[代理]'} <-- ${status} ${req.method} ${req.originalUrl}` +
     ` 响应=${formatBytes(bytes)} 耗时=${ms}ms IP=${clientIp}`;
 
   if (status >= 500) logger.error(line);
@@ -99,11 +95,11 @@ function logResponse(req, clientIp, target, status, bytes, startedAt) {
 
 function proxyMiddleware() {
   return function proxy(req, res, next) {
-    if (!isDownloadProxyEnabled()) return next();
-    if (!shouldProxy(req.originalUrl)) return next();
+    // 按路径前缀决定这一路走谁：命中的代理未启用 => 落回本机实现
+    const route = resolveProxyFor(req.originalUrl);
+    if (!route) return next();
 
-    const base = normalizeProxyBaseUrl(getConfig('downloadProxy')?.baseUrl);
-    if (!base) return next();
+    const { kind, base } = route;
 
     // req.originalUrl 含 query string；router 挂载在 /api 下会截掉前缀，所以用 originalUrl
     const target = `${base}${req.originalUrl}`;
@@ -127,8 +123,9 @@ function proxyMiddleware() {
 
     const startedAt = Date.now();
     const reqSize = Number(req.headers['content-length'] || 0) || null;
+    const tag = `[代理:${kind}]`;
     logger.log(
-      `[代理] --> ${req.method} ${req.originalUrl} -> ${target}` +
+      `${tag} --> ${req.method} ${req.originalUrl} -> ${target}` +
       (reqSize ? ` 请求体=${formatBytes(reqSize)}` : '') +
       ` IP=${clientIp}`
     );
@@ -158,11 +155,11 @@ function proxyMiddleware() {
           res.end();
         }
 
-        logResponse(req, clientIp, target, upstream.status, sent, startedAt);
+        logResponse(req, clientIp, target, upstream.status, sent, startedAt, tag);
       })
       .catch((err) => {
         logger.error(
-          `[代理] <-- 失败 ${req.method} ${req.originalUrl} -> ${target}` +
+          `${tag} <-- 失败 ${req.method} ${req.originalUrl} -> ${target}` +
           ` 耗时=${Date.now() - startedAt}ms IP=${clientIp} 原因=${err.message}`
         );
         if (!res.headersSent) {

@@ -12,6 +12,14 @@ const DEFAULT_FILE_TYPES = {
 
 export default function AdminPage() {
   const [password, setPassword] = useState(null);
+  // IP 过滤是否生效：管理页可用但尚未登录时，也需要知道该不该显示这个标签
+  const [ipFilterActive, setIpFilterActive] = useState(false);
+  useEffect(() => {
+    fetch('/api/access-status')
+      .then((r) => r.json())
+      .then((d) => setIpFilterActive(!!d.ipFilterActive))
+      .catch(() => {});
+  }, []);
   const [settings, setSettings] = useState(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -34,7 +42,9 @@ export default function AdminPage() {
         headers: { 'x-admin-password': pwd },
       });
       if (res.ok) {
-        setSettings(await res.json());
+        const data = await res.json();
+        setSettings(data);
+        if (data.ipFilterEnabled !== undefined) setIpFilterActive(!!data.ipFilterEnabled);
       }
     } catch {}
     setLoading(false);
@@ -112,6 +122,9 @@ export default function AdminPage() {
         } else {
           setMessage('设置已保存');
           setSettings(data.settings);
+          if (data.settings.ipFilterEnabled !== undefined) {
+            setIpFilterActive(!!data.settings.ipFilterEnabled);
+          }
         }
       } else {
         setMessage(data.error || '保存失败');
@@ -193,14 +206,36 @@ export default function AdminPage() {
     return 'off';
   })();
 
-  const updateDownloadProxy = (field, value) => {
+  // 上传 / 下载两路代理各自独立，互不影响，可以只开一路
+  const updateProxy = (kind, field, value) => {
+    const key = `${kind}Proxy`;
     setSettings(prev => ({
       ...prev,
-      downloadProxy: {
-        ...(prev.downloadProxy || {}),
+      [key]: {
+        ...(prev[key] || {}),
         [field]: value,
       },
     }));
+  };
+
+  // 上传完成后回调（webhook 列表，可配多个）
+  const webhooks = Array.isArray(settings?.webhooks) ? settings.webhooks : [];
+  const setWebhooks = (list) => setSettings(prev => ({ ...prev, webhooks: list }));
+  const updateWebhook = (idx, field, value) => {
+    setWebhooks(webhooks.map((w, i) => (i === idx ? { ...w, [field]: value } : w)));
+  };
+  const addWebhook = () => {
+    if (webhooks.length >= 20) return;
+    setWebhooks([...webhooks, { name: '', enabled: false, url: '', secret: '' }]);
+  };
+  const removeWebhook = (idx) => setWebhooks(webhooks.filter((_, i) => i !== idx));
+  const moveWebhook = (idx, delta) => {
+    const to = idx + delta;
+    if (to < 0 || to >= webhooks.length) return;
+    const list = [...webhooks];
+    const [it] = list.splice(idx, 1);
+    list.splice(to, 0, it);
+    setWebhooks(list);
   };
 
   // Not logged in: show inline login form
@@ -240,7 +275,8 @@ export default function AdminPage() {
     { key: 'general', label: '⚙️ 基本设置' },
     { key: 'fileTypes', label: '📎 文件类型' },
     { key: 'security', label: '🛡️ 安全设置' },
-    { key: 'ipFilter', label: '🌐 IP 过滤' },
+    // IP 过滤完全没启用时不显示这个标签（管理页也还没登录，无法读 settings）
+    ...(ipFilterActive ? [{ key: 'ipFilter', label: '🌐 IP 过滤' }] : []),
   ];
 
   return (
@@ -325,7 +361,7 @@ export default function AdminPage() {
                 value={settings.storagePath || ''}
                 onChange={e => updateSetting('storagePath', e.target.value)}
               />
-              <div className="hint">Windows 默认 files</div>
+              <div className="hint">Windows 默认 files。<strong>修改后下次上传生效</strong>（已入库的旧记录仍指向原路径）</div>
             </div>
             <div className="form-group">
               <label>文件保留时长（小时）</label>
@@ -336,7 +372,7 @@ export default function AdminPage() {
                 min={1}
                 max={720}
               />
-              <div className="hint">超过此时长的文件将被自动清理，默认 24 小时</div>
+              <div className="hint">超过此时长的文件将被自动清理，默认 24 小时。<strong>下次上传生效</strong>（已入库的过期时间不变）</div>
             </div>
             <div className="form-group">
               <label>手动清理</label>
@@ -516,46 +552,239 @@ export default function AdminPage() {
 
             <hr style={{ margin: '20px 0', border: 'none', borderTop: '1px solid #e0e0e0' }} />
 
-            <h3 style={{ fontSize: 14, marginBottom: 10, color: '#555' }}>代理转发</h3>
-            <div className="form-group" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <input
-                type="checkbox"
-                checked={settings.downloadProxy?.enabled || false}
-                onChange={e => updateDownloadProxy('enabled', e.target.checked)}
-                id="downloadProxyEnabled"
-              />
-              <label htmlFor="downloadProxyEnabled" style={{ margin: 0 }}>启用代理转发（上传 / 下载走远程）</label>
+            <h3 style={{ fontSize: 14, marginBottom: 10, color: '#555' }}>下载令牌（服务端脚本用）</h3>
+            <div className="hint" style={{ marginBottom: 14 }}>
+              Jenkins 等服务端脚本调用 <code>/api/download/*</code> 与 <code>/api/files</code> 时，
+              请求头 <code>x-download-token</code> 必须带上这个令牌。
+              <b>与管理员口令分开</b>：它只能读已发布的文件，改不了任何设置。
+              未配置令牌时，这些接口一律 401。
             </div>
             <div className="form-group">
-              <label>代理服务地址（/api 的上一层）</label>
-              <input
-                type="text"
-                value={settings.downloadProxy?.baseUrl || ''}
-                onChange={e => updateDownloadProxy('baseUrl', e.target.value)}
-                placeholder="http://nexusoss.org/repository"
-                disabled={!settings.downloadProxy?.enabled}
-              />
+              <label>下载令牌</label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  type="text"
+                  value={settings.downloadToken || ''}
+                  onChange={e => setSettings(prev => ({ ...prev, downloadToken: e.target.value }))}
+                  placeholder="留空则服务启动时自动生成"
+                  style={{ flex: 1 }}
+                />
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    const bytes = new Uint8Array(24);
+                    crypto.getRandomValues(bytes);
+                    const token = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+                    setSettings(prev => ({ ...prev, downloadToken: token }));
+                  }}
+                  style={{ padding: '6px 12px', fontSize: 13, whiteSpace: 'nowrap' }}
+                >
+                  随机生成
+                </button>
+              </div>
               <div className="hint">
-                启用后只有 <code>/api/upload</code> 与 <code>/api/download</code> 转发到远程代理服务，
-                本机不查数据库、不读文件；管理接口（<code>/api/admin</code> 等）始终走本机。
-                地址填到 <code>/api</code> 的上一层，转发时自动补 <code>/api</code> + 原始路径。
-                例如填 <code>http://nexusoss.org/repository</code>，则
-                <code>/api/upload/history</code> 转发到
-                <code>http://nexusoss.org/repository/api/upload/history</code>。
-                留空或关闭则全部走本机实现。
+                保存后生效。把它填进 <code>webhooks/jenkins/config.json</code> 的
+                <code> download_token</code>。清空即关闭（所有服务端下载调用都会 401）。
               </div>
             </div>
-            {settings.downloadProxy?.enabled && settings.downloadProxy?.baseUrl && (
+
+            <hr style={{ margin: '20px 0', border: 'none', borderTop: '1px solid #e0e0e0' }} />
+
+            <h3 style={{ fontSize: 14, marginBottom: 10, color: '#555' }}>上传完成 Webhook</h3>
+            <div className="hint" style={{ marginBottom: 14 }}>
+              每次上传成功后，向<b>所有已启用</b>的地址并发 POST 一份 JSON：含<b>文件 ID</b>、
+              <b>附件清单</b>（每个附件都带 <code>downloadUrl</code> 下载直链），以及分享链接、过期时间等。
+              <b>异步发送</b>，回调慢或失败都不会影响上传本身；单个失败也不影响其它 webhook。
+              仓库里有现成的接收脚本：<code>webhooks/mail/</code>（邮件通知）、
+              <code>webhooks/jenkins/</code>（Jenkins 下载任务）。
+            </div>
+
+            <div className="form-group">
+              <label>对外访问地址（用于拼下载链接，可留空）</label>
+              <input
+                type="text"
+                value={settings.webhookPublicUrl || ''}
+                onChange={e => setSettings(prev => ({ ...prev, webhookPublicUrl: e.target.value }))}
+                placeholder="https://files.example.com"
+              />
+              <div className="hint">
+                留空则用本次请求的 Host。通过域名/IP 或反向代理对外提供服务时，
+                建议填成外部可访问的地址，否则附件下载链接可能是内网地址。
+              </div>
+            </div>
+            <div className="form-group">
+              <label>超时（毫秒，默认 10000）</label>
+              <input
+                type="number"
+                min="1000"
+                max="60000"
+                value={settings.webhookTimeoutMs || 10000}
+                onChange={e => setSettings(prev => ({ ...prev, webhookTimeoutMs: Number(e.target.value) }))}
+              />
+              <div className="hint">对所有 webhook 生效；超过该时间即放弃，不会拖住上传完成的响应。</div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '18px 0 10px' }}>
+              <label style={{ margin: 0, fontWeight: 600 }}>Webhook 列表（{webhooks.length}）</label>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={addWebhook}
+                disabled={webhooks.length >= 20}
+                style={{ padding: '6px 14px', fontSize: 13 }}
+              >
+                + 添加 Webhook
+              </button>
+            </div>
+
+            {webhooks.length === 0 && (
               <div className="hint" style={{ marginBottom: 12 }}>
-                预览：<code>{`${(settings.downloadProxy.baseUrl || '').replace(/\/+$/, '')}/api/upload/history`}</code>
+                还没有配置任何 webhook。点「+ 添加 Webhook」新增，例如邮件通知或 Jenkins 下载任务。
               </div>
             )}
+
+            {webhooks.map((wh, idx) => (
+              <div key={idx} style={{
+                border: '1px solid #e5e7eb',
+                borderRadius: 8,
+                padding: '14px 16px',
+                marginBottom: 14,
+                background: wh.enabled ? '#fafafa' : '#f5f5f5',
+              }}>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 12 }}>
+                  <input
+                    type="checkbox"
+                    checked={!!wh.enabled}
+                    onChange={e => updateWebhook(idx, 'enabled', e.target.checked)}
+                    id={`whEnabled${idx}`}
+                  />
+                  <label htmlFor={`whEnabled${idx}`} style={{ margin: 0, flex: 1 }}>启用</label>
+                  <button type="button" onClick={() => moveWebhook(idx, -1)} disabled={idx === 0}
+                    style={{ border: '1px solid #ddd', background: '#fff', borderRadius: 4, padding: '2px 8px', cursor: 'pointer' }}
+                    title="上移">↑</button>
+                  <button type="button" onClick={() => moveWebhook(idx, 1)} disabled={idx === webhooks.length - 1}
+                    style={{ border: '1px solid #ddd', background: '#fff', borderRadius: 4, padding: '2px 8px', cursor: 'pointer' }}
+                    title="下移">↓</button>
+                  <button type="button" onClick={() => removeWebhook(idx)}
+                    style={{ border: '1px solid #f0c0c0', color: '#c53030', background: '#fff', borderRadius: 4, padding: '2px 8px', cursor: 'pointer' }}
+                    title="删除这一条">删除</button>
+                </div>
+
+                <div className="form-group">
+                  <label>名称（可留空，仅用于日志区分）</label>
+                  <input
+                    type="text"
+                    value={wh.name || ''}
+                    onChange={e => updateWebhook(idx, 'name', e.target.value)}
+                    placeholder="例如：邮件通知 / Jenkins 下载"
+                    maxLength={40}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>地址</label>
+                  <input
+                    type="text"
+                    value={wh.url || ''}
+                    onChange={e => updateWebhook(idx, 'url', e.target.value)}
+                    placeholder="http://jenkins:8080/generic-webhook-trigger/invoke?token=xxx"
+                    disabled={!wh.enabled}
+                  />
+                  <div className="hint">
+                    支持 <code>http(s)://</code>；请求头带 <code> x-webhook-event: upload.completed</code>。
+                    {wh.name ? <>, 日志中标为 <code>[Webhook:{wh.name}]</code></> : null}
+                  </div>
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label>签名密钥（可留空）</label>
+                  <input
+                    type="password"
+                    value={wh.secret || ''}
+                    onChange={e => updateWebhook(idx, 'secret', e.target.value)}
+                    placeholder="留空则不签名"
+                    disabled={!wh.enabled}
+                    autoComplete="off"
+                  />
+                  <div className="hint">
+                    配置后请求头带 <code> x-webhook-signature: sha256=&lt;hex&gt;</code>，
+                    为 <code>HMAC-SHA256(密钥, 原始请求体)</code>，接收方可校验来源与防篡改。
+                  </div>
+                </div>
+              </div>
+            ))}
+
+            <hr style={{ margin: '20px 0', border: 'none', borderTop: '1px solid #e0e0e0' }} />
+
+            <h3 style={{ fontSize: 14, marginBottom: 10, color: '#555' }}>代理转发</h3>
+            <div className="hint" style={{ marginBottom: 14 }}>
+              上传与下载<b>分开配置</b>，可以只配其中一路：启用的那一路转发到远程代理服务
+              （本机不查数据库、不读文件），未启用的走本机实现。
+              管理接口（<code>/api/admin</code> 等）始终走本机。
+              地址填到 <code>/api</code> 的上一层，转发时自动补 <code>/api</code> + 原始路径，
+              例如 <code>http://nexusoss.org/repository</code>，
+              <code>/api/upload/history</code> 转发到
+              <code>http://nexusoss.org/repository/api/upload/history</code>。
+            </div>
+
+            {['upload', 'download'].map(kind => {
+              const key = `${kind}Proxy`;
+              const proxy = settings[key] || {};
+              const label = kind === 'upload' ? '上传' : '下载';
+              const interfaces = kind === 'upload'
+                ? '/api/upload/*（init / chunk / complete / history / validate-ids）'
+                : '/api/download/*（详情与文件下载）';
+              return (
+                <div key={key} style={{
+                  border: '1px solid #e5e7eb',
+                  borderRadius: 8,
+                  padding: '14px 16px',
+                  marginBottom: 14,
+                  background: '#fafafa',
+                }}>
+                  <div className="form-group" style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+                    <input
+                      type="checkbox"
+                      checked={proxy.enabled || false}
+                      onChange={e => updateProxy(kind, 'enabled', e.target.checked)}
+                      id={`${key}Enabled`}
+                    />
+                    <label htmlFor={`${key}Enabled`} style={{ margin: 0 }}>
+                      启用{label}代理转发（{label}走远程）
+                    </label>
+                  </div>
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label>{label}代理服务地址（/api 的上一层）</label>
+                    <input
+                      type="text"
+                      value={proxy.baseUrl || ''}
+                      onChange={e => updateProxy(kind, 'baseUrl', e.target.value)}
+                      placeholder="http://nexusoss.org/repository"
+                      disabled={!proxy.enabled}
+                    />
+                    <div className="hint">
+                      转发范围：<code>{interfaces}</code>；留空或关闭则该部分走本机实现。
+                    </div>
+                    {proxy.enabled && proxy.baseUrl && (
+                      <div className="hint">
+                        预览：<code>{`${String(proxy.baseUrl).replace(/\/+$/, '')}/api/${kind}/history`}</code>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
 
           </section>
         )}
 
         {tab === 'ipFilter' && (
           <section>
+            <div className="hint" style={{ marginBottom: 12 }}>
+              当前状态：              <strong style={{ color: ipFilterActive ? '#276749' : '#c53030' }}>
+                {ipFilterActive ? '已启用，保存后立即生效' : '未启用 —— 上传/下载均可访问'}
+              </strong>
+              。
+            </div>
             <h3 style={{ fontSize: 14, marginBottom: 10, color: '#555' }}>反向代理 / 真实 IP</h3>
             <div className="hint" style={{ marginBottom: 12 }}>
               经 nginx 等反向代理时，socket 地址只是代理节点 IP，真实客户端 IP 在

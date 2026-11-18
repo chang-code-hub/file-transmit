@@ -29,7 +29,8 @@
 - 输入文件 ID 查看文件详情
 - 详情弹窗展示描述、上传者信息（IP、时间、浏览器等）及文件清单
 - 点击文件名直接下载
-- 可配置代理转发，`/api/upload` 与 `/api/download` 转发到远程代理服务
+- 上传、下载代理可**分开配置**，允许只配其中一路；启用的部分转发到远程代理服务
+- 可配置**上传完成 Webhook**：上传成功后回调，携带文件 ID 与附件清单（含下载直链）
 
 ## 技术栈
 
@@ -271,27 +272,76 @@ scripts\uninstall-service.bat  # 卸载服务
 - **存储路径**：文件在服务器上的存放目录，支持相对路径和绝对路径
 - **保留时长**：文件上传后保留的小时数，超时自动清理（每 30 分钟执行一次清理任务）
 
+#### 上传完成 Webhook
+
+每次上传成功后，向配置的地址 POST 一份 JSON，**异步发送**，回调慢或失败都不影响上传本身。
+
+```json
+{
+  "event": "upload.completed",
+  "fileId": "ABCD1234",
+  "description": "会议纪要",
+  "createdAt": 1794967683864,
+  "expiresAt": 1795054083864,
+  "retentionHours": 24,
+  "uploaderIp": "192.168.1.23",
+  "origin": "https://files.example.com",
+  "shareUrl": "https://files.example.com/#/down?f=ABCD1234",
+  "zipUrl": "https://files.example.com/api/download/ABCD1234/zip",
+  "fileCount": 2,
+  "totalSize": 1048576,
+  "totalSizeText": "1.0 MB",
+  "attachments": [
+    {
+      "fileName": "报告.docx",
+      "storedName": "报告.docx",
+      "size": 524288,
+      "sizeText": "512.0 KB",
+      "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "downloadUrl": "https://files.example.com/api/download/ABCD1234/%E6%8A%A5%E5%91%8A.docx"
+    }
+  ],
+  "succeededFiles": [{ "name": "报告.docx", "size": 524288 }],
+  "failedFiles": []
+}
+```
+
+- **触发时机**：`/api/upload/complete` 写库成功之后（仅成功上传）
+- **附件清单** `attachments`：以落库记录为准，每项都带可直接打开的 `downloadUrl`
+- **对外访问地址 `publicUrl`**：拼下载链接用。留空则用本次请求的 Host；
+  走域名或反向代理时**务必填写**，否则链接可能是内网地址
+- **签名密钥 `secret`**：配置后请求头带
+  `X-Webhook-Signature: sha256=<hex>`，值为 `HMAC-SHA256(secret, 原始请求体)`
+- **其它请求头**：`X-Webhook-Event: upload.completed`、`X-Webhook-Delivery: <uuid>`
+- **超时**：默认 10000ms（上限 60000ms），超时即放弃
+- **失败**：仅记日志（`[Webhook] <-- 失败 ...`），不影响上传结果，**不自动重试**
+- **校验**：启用时地址必填且必须是 `http(s)://`；开关打开但地址留空等同未启用
+
 #### 代理转发
 
-启用后上传与下载**不再查本地数据库、不读本地文件**，而是原样转发到远程代理服务。
-管理接口始终走本机。
+上传与下载是**两路独立的代理**，可以只配置其中一路；启用的那一路**不查本地数据库、不读本地文件**，
+原样转发到远程代理服务，未启用的那一路走本机实现。管理接口始终走本机。
 
-拓扑：
+拓扑（只开上传时，下载那段仍是本机）：
 
 ```
-浏览器 -> 本服务 /api  ->  远程代理服务 /api  ->  存储 / 数据库
+浏览器 -> 本服务 /api/upload/*   -> 远程代理服务(上传) /api  ->  存储 / 数据库
+       -> 本服务 /api/download/* -> 本机 DuckDB + 本地文件
 ```
 
+- **上传代理** `uploadProxy`：管辖 `/api/upload/*`（含 init / chunk / complete / history / validate-ids）
+- **下载代理** `downloadProxy`：管辖 `/api/download/*`（详情与文件下载、zip 打包）
+- **独立开关**：两路各自 `enabled` + `baseUrl`，互不影响。上游宕机也只影响对应那一段
 - **代理服务地址**：填到 `/api` 的**上一层**，转发时自动补 `/api` + 原始路径。
   例如填 `http://nexusoss.org/repository`，则
   `/api/upload/history` → `http://nexusoss.org/repository/api/upload/history`
-- **走代理的接口**：`/api/upload/*`（含 init / chunk / complete / history / validate-ids）、
-  `/api/download/*`（详情与文件下载），请求体（含 multipart 分块）原样透传
 - **始终走本机**：`/api/admin/*`（管理设置）、`/api/access-status` 等
 - **透传内容**：方法、路径、query string、请求头、请求体、响应状态码、响应头（含 `set-cookie`）、响应体
 - **追加头**：`X-Forwarded-For` / `X-Forwarded-Proto` / `X-Forwarded-Host`，供上游识别真实来源
-- **上游不可用**：返回 `502 代理服务不可用`
-- **关闭或留空**：走本机实现（本地 DuckDB + 本地文件存储）
+- **上游不可用**：返回 `502 代理服务不可用`（仅该路）
+- **开关打开但地址留空**：等同未启用，走本机实现（本地 DuckDB + 本地文件存储）
+- **旧配置兼容**：旧版只有 `downloadProxy` 一个字段（同时管上传和下载），首次启动时自动
+  复制成 `uploadProxy` 与 `downloadProxy` 各一份，行为不变
 
 ## 反向代理与真实 IP
 
@@ -414,7 +464,9 @@ zone id（`fe80::1%eth0`），保证能与 IP 过滤规则直接比对。
 | `clamscanPath` | `""` | clamscan 路径，留空按 PATH 查找 |
 | `trustProxy` | `false` | 是否采信 `X-Forwarded-For` 等转发头，见[反向代理与真实 IP](#反向代理与真实-ip) |
 | `ipFilter` | 关闭 | 上传/下载 IP 白名单或黑名单 |
-| `downloadProxy` | 关闭 | 将上传/下载请求转发到上游代理服务 |
+| `uploadProxy` | 关闭 | 上传代理：`/api/upload/*` 转发到上游，可单独启用
+| `downloadProxy` | 关闭 | 下载代理：`/api/download/*` 转发到上游，可单独启用 |
+| `webhook` | 关闭 | 上传完成后回调：`{enabled, url, secret, publicUrl, timeoutMs}`，见[上传完成 Webhook](#上传完成-webhook) |
 
 ## 项目结构
 
@@ -434,7 +486,8 @@ file-transmit/
 │   │   └── download.js       # 下载 API
 │   ├── services/
 │   │   ├── cleanup.js        # 定期清理过期文件
-│   │   └── archiveCheck.js   # 压缩包检测与病毒检测（7z 解压 + clamscan 主动扫描 + 解压-等待-对比）
+│   │   ├── archiveCheck.js   # 压缩包检测与病毒检测（7z 解压 + clamscan 主动扫描 + 解压-等待-对比）
+│   │   └── webhook.js        # 上传完成回调：组装负载、HMAC 签名、异步 POST
 │   └── utils/
 │       └── ipMatch.js        # IP 匹配工具
 ├── client/
@@ -472,6 +525,7 @@ file-transmit/
 | GET | `/api/upload/validate-ids` | 批量验证文件 ID 有效性 |
 | GET | `/api/download/:fileId` | 查看文件详情 |
 | GET | `/api/download/:fileId/:fileName` | 下载文件 |
+| GET | `/api/access-status` | 上传/下载是否放行 + IP 过滤是否启用 |
 
 ## 许可
 
