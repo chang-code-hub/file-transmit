@@ -18,7 +18,7 @@
  */
 const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
-const { resolveProxyFor } = require('../config');
+const { resolveProxyFor, isPreferLocalDownload, hasLocalFile } = require('../config');
 const logger = require('../utils/logger');
 
 /** 不该被转发的 hop-by-hop 头 */
@@ -100,6 +100,17 @@ function proxyMiddleware() {
     if (!route) return next();
 
     const { kind, base } = route;
+
+    // 「下载优先本地」：下载这一路，先看本机磁盘有没有该文件，有就直接本机出。
+    // 这样常见情况（文件就在本机）不用再绕一圈上游；只有本机没有的才转发。
+    if (kind === 'download' && isPreferLocalDownload()) {
+      const m = String(req.originalUrl || '').split('?')[0].match(/^\/api\/download\/([^/]+)/);
+      const fileId = m ? decodeURIComponent(m[1]) : '';
+      if (fileId && hasLocalFile(fileId)) {
+        logger.log(`[代理:download] 本机已有 ${fileId}，按「下载优先本地」跳过转发 -> 本机处理`);
+        return next();
+      }
+    }
 
     // req.originalUrl 含 query string；router 挂载在 /api 下会截掉前缀，所以用 originalUrl
     const target = `${base}${req.originalUrl}`;

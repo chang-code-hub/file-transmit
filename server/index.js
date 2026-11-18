@@ -60,11 +60,39 @@ app.use(cookieParser());
 app.use(userIdMiddleware);
 
 /**
- * 下载令牌鉴权：Jenkins 等服务端调用方访问 /api/download/* 时用。
+ * 下载令牌鉴权：Jenkins 等**服务端调用方**访问 /api/download/* 时用。
  * 头部 `x-download-token` 必须匹配 config.downloadToken；令牌为空 = 未启用，一律拒绝。
  * 与管理员口令分开：这个令牌只能读已发布的文件，改不了任何设置。
+ *
+ * 关键：**只拦服务端调用方，不拦浏览器**。浏览器是通过页面链接下载的，
+ * 不会（也无法方便地）带 x-download-token；若一视同仁地拦，前端下载会全部 401。
+ * 判定规则：请求头里**带了** x-download-token 就按服务端对待、严格校验；
+ * 没带则视为浏览器，放行（浏览器的访问权限由 IP 过滤负责）。
  */
 function downloadTokenAuth(req, res, next) {
+  const given = req.headers['x-download-token'];
+
+  // 浏览器路径：不带令牌头，不在此处拦截（IP 过滤已在 download 路由里生效）
+  if (given === undefined || given === '') return next();
+
+  const token = getConfig('downloadToken');
+  if (!token) {
+    return res.status(401).json({ error: '下载令牌未配置：请在管理页「安全设置」里生成' });
+  }
+  if (given !== token) {
+    const clientIp = require('./utils/clientIp').clientIpOf(req);
+    logger.log(`[下载令牌] 校验失败: IP=${clientIp}`);
+    return res.status(401).json({ error: '下载令牌无效' });
+  }
+  next();
+}
+
+/**
+ * 强制下载令牌鉴权：用于**只有服务端会调**的接口（如 /api/files）。
+ * 与 downloadTokenAuth 的区别：不带令牌也拒绝 —— 这类接口对浏览器没有用处，
+ * 不放行可避免它变成未鉴权的数据泄露口子。
+ */
+function requireDownloadToken(req, res, next) {
   const token = getConfig('downloadToken');
   const given = req.headers['x-download-token'];
   if (!token) {
@@ -91,8 +119,8 @@ app.get('/api/access-status', (req, res) => {
 });
 
 // API routes（upload/download 未被代理转发时走本机实现）
-// 服务端调用方（Jenkins 等）按时间/分页拉取文件列表：走下载令牌，不走 cookie 用户维度
-app.get('/api/files', downloadTokenAuth, async (req, res) => {
+// 服务端调用方（Jenkins 等）按时间/分页拉取文件列表：必须带下载令牌（纯服务端接口，浏览器不调）
+app.get('/api/files', requireDownloadToken, async (req, res) => {
   try {
     const { listFiles } = require('./db');
     const files = await listFiles({
@@ -123,7 +151,7 @@ app.get('/api/files', downloadTokenAuth, async (req, res) => {
 
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/upload', require('./routes/upload'));
-// 令牌调用方（Jenkins 等）先过鉴权，再进 download 路由（跳过 IP 过滤）
+// 服务端调用方（带 x-download-token）在此鉴权；浏览器不带令牌头，直接进 download 路由
 app.use('/api/download', downloadTokenAuth, require('./routes/download'));
 
 // Serve static frontend in production

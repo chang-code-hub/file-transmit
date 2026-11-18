@@ -49,6 +49,7 @@ router.put('/settings', adminAuth, (req, res) => {
     'clamscanPath',
     'ipFilter',
     'trustProxy',
+    'preferLocalDownload',
     'uploadProxy',
     'downloadProxy',
     'webhooks',

@@ -64,6 +64,9 @@ function loadConfig() {
   }
   if (config.uploadProxy.enabled === undefined) config.uploadProxy.enabled = false;
   if (!config.uploadProxy.baseUrl) config.uploadProxy.baseUrl = '';
+  // 「下载优先本地」：开着下载代理时，先看本机磁盘有没有这个文件，
+  // 有就直接本机出（省一次远程往返），没有才转发上游。默认关，保持原有行为。
+  if (config.preferLocalDownload === undefined) config.preferLocalDownload = false;
   if (!config.ipFilter) {
     config.ipFilter = {
       upload: { enabled: false, mode: 'allow', list: [] },
@@ -261,6 +264,41 @@ function resolveProxyFor(originalUrl) {
   return base ? { kind: matched, base } : null;
 }
 
+
+/**
+ * 「下载优先本地」是否开启。
+ * @returns {boolean}
+ */
+function isPreferLocalDownload() {
+  return !!config.preferLocalDownload;
+}
+
+/**
+ * 本机是否存有该 fileId 的实际文件（有文件夹且里面至少有一个文件）。
+ * 供「下载优先本地」判断：有就本机出，没有才走上游代理。
+ *
+ * 只看文件系统、不查库 —— 代理中间件挂载在 body 解析器之前，
+ * 那时 DB 还没初始化，查库会抛 "Database not initialized"。
+ *
+ * @param {string} fileId
+ * @returns {boolean}
+ */
+function hasLocalFile(fileId) {
+  const id = String(fileId || '').trim().toUpperCase();
+  if (!/^[A-Z0-9]{8}$/.test(id)) return false;
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const dir = path.join(config.storagePath || 'files', id);
+    if (!fs.existsSync(dir)) return false;
+    // 只认真实文件；.chunks（上传中的分块暂存）不算，避免半截上传被当成成品下载
+    const names = fs.readdirSync(dir);
+    return names.some((n) => n !== '.chunks' && fs.statSync(path.join(dir, n)).isFile());
+  } catch {
+    return false;
+  }
+}
+
 function updateConfig(updates) {
   // Don't overwrite adminPassword with empty
   if (updates.adminPassword === '' || updates.adminPassword === undefined) {
@@ -284,4 +322,6 @@ module.exports = {
   resolveProxyFor,
   isIpFilterActive,
   validateWebhook,
+  isPreferLocalDownload,
+  hasLocalFile,
 };

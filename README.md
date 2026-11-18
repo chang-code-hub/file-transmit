@@ -332,6 +332,10 @@ scripts\uninstall-service.bat  # 卸载服务
 - **上传代理** `uploadProxy`：管辖 `/api/upload/*`（含 init / chunk / complete / history / validate-ids）
 - **下载代理** `downloadProxy`：管辖 `/api/download/*`（详情与文件下载、zip 打包）
 - **独立开关**：两路各自 `enabled` + `baseUrl`，互不影响。上游宕机也只影响对应那一段
+- **下载优先本地** `preferLocalDownload`：开着下载代理时，先看**本机磁盘**有没有该文件，
+  有就直接本机出（省一次远程往返），本机没有才转发上游。默认关闭。
+  判定只看文件系统、不查库（代理中间件在 body 解析器之前，那时 DB 还没初始化）；
+  只有 `.chunks`（上传中的分块暂存）的 ID 不算本地成品，仍会走上游
 - **代理服务地址**：填到 `/api` 的**上一层**，转发时自动补 `/api` + 原始路径。
   例如填 `http://nexusoss.org/repository`，则
   `/api/upload/history` → `http://nexusoss.org/repository/api/upload/history`
@@ -437,6 +441,7 @@ zone id（`fe80::1%eth0`），保证能与 IP 过滤规则直接比对。
   "clamscanPath": "",
   "trustProxy": ["127.0.0.1"],
   "downloadProxy": { "enabled": false, "baseUrl": "" },
+  "preferLocalDownload": false,
   "ipFilter": {
     "upload": { "enabled": false, "mode": "deny", "list": [] },
     "download": { "enabled": false, "mode": "allow", "list": [] }
@@ -466,6 +471,7 @@ zone id（`fe80::1%eth0`），保证能与 IP 过滤规则直接比对。
 | `ipFilter` | 关闭 | 上传/下载 IP 白名单或黑名单 |
 | `uploadProxy` | 关闭 | 上传代理：`/api/upload/*` 转发到上游，可单独启用
 | `downloadProxy` | 关闭 | 下载代理：`/api/download/*` 转发到上游，可单独启用 |
+| `preferLocalDownload` | `false` | 下载优先本地：本机有该文件就不出网，否则转发上游 |
 | `webhook` | 关闭 | 上传完成后回调：`{enabled, url, secret, publicUrl, timeoutMs}`，见[上传完成 Webhook](#上传完成-webhook) |
 
 ## 项目结构

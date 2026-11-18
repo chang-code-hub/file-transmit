@@ -770,6 +770,31 @@ export default function AdminPage() {
                       </div>
                     )}
                   </div>
+
+                  {kind === 'download' && (
+                    <div className="form-group" style={{
+                      display: 'flex', alignItems: 'center', gap: 12,
+                      marginTop: 12, paddingTop: 12, borderTop: '1px dashed #ddd', marginBottom: 0,
+                    }}>
+                      <input
+                        type="checkbox"
+                        checked={settings.preferLocalDownload || false}
+                        onChange={e => updateSetting('preferLocalDownload', e.target.checked)}
+                        id="preferLocalDownload"
+                        disabled={!proxy.enabled}
+                      />
+                      <label htmlFor="preferLocalDownload" style={{ margin: 0 }}>
+                        下载优先本地
+                      </label>
+                    </div>
+                  )}
+                  {kind === 'download' && settings.preferLocalDownload && (
+                    <div className="hint" style={{ marginTop: 6, marginBottom: 0 }}>
+                      开启后，下载请求先看<b>本机磁盘</b>有没有该文件：
+                      有就直接本机出（省一次远程往返），本机没有才转发上游。
+                      未勾选时一律走上面配置的远程代理。
+                    </div>
+                  )}
                 </div>
               );
             })}
