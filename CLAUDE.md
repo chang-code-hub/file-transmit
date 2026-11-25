@@ -37,11 +37,12 @@ file-transmit/
 │   │   └── auth.js           # Verifies x-admin-password header against config.adminPassword
 │   ├── routes/
 │   │   ├── admin.js          # POST /api/admin/login, GET/PUT /api/admin/settings, GET /api/admin/stats
-│   │   ├── upload.js         # POST /api/upload/files (multer), GET /api/upload/history, GET /api/upload/validate-ids
-│   │   └── download.js       # GET /api/download/:fileId (detail), GET /api/download/:fileId/:fileName (download; optional 下载代理 redirect)
+│   │   ├── upload.js         # POST /api/upload/url/resolve | init | chunk | complete (chunked), GET /history, GET /validate-ids
+│   │   └── download.js       # GET /api/download/:fileId (detail), GET /api/download/:fileId/:fileName (download; 下载代理 redirect, 外链 302)
 │   ├── services/
 │   │   ├── cleanup.js        # setInterval (30min): deletes expired files+folders+DB records, removes empty dirs
 │   │   ├── archiveCheck.js   # Archive inspection + virus detection: encrypted detection, recursive 7z extraction, count-wait-recompare
+│   │   ├── urlImport.js      # Internet-URL import: probe remote (filename/size/MIME) + stream download for hosted entries
 │   │   └── webhook.js        # Post-upload webhook: build payload (fileId + attachments w/ downloadUrl), HMAC sign, fire-and-forget POST
 │   └── utils/
 │       └── ipMatch.js        # Test IP against CIDR, hyphen-range, or exact-match expressions
@@ -50,12 +51,14 @@ file-transmit/
 │   └── src/
 │       ├── App.jsx           # HashRouter with three routes, top nav
 │       ├── pages/
-│       │   ├── UploadPage.jsx     # Drag-drop zone, multi-file select, auto-rename dupes, description, history
+│       │   ├── UploadPage.jsx     # Drag-drop zone, multi-file select, auto-rename dupes, URL entries, description, history
 │       │   ├── DownloadPage.jsx   # Single ID input → opens FileDetailModal
 │       │   └── AdminPage.jsx      # Password gate → all settings (file types, IP filters, storage, archive check, virus detect)
 │       └── components/
 │           ├── PasswordModal.jsx   # Reusable admin login modal
 │           ├── FileDetailModal.jsx # File metadata + file list with download links
+│           ├── TextFileModal.jsx   # New/edit plain-text file modal
+│           ├── UrlFileModal.jsx    # Add file from an internet URL (auto filename + 托管 checkbox)
 │           └── HistoryButton.jsx   # Reads IDs from localStorage, validates against server, shows list
 ├── config.json              # Runtime config (password, storagePath, retentionHours, file types, IP rules)
 └── scripts/                 # start/install-service/uninstall-service (.bat + .sh)
@@ -65,6 +68,7 @@ file-transmit/
 
 - **Upload/Download proxies are separate** — `config.uploadProxy` covers `/api/upload/*`, `config.downloadProxy` covers `/api/download/*`; each has its own `enabled` + `baseUrl`, so either side can be proxied alone. `middleware/proxy.js` (mounted before body parsers) routes by path via `resolveProxyFor()`; a side whose proxy is off falls through to the local implementation. `baseUrl` is the layer *above* `/api` (e.g. `http://host/repository`). `/api/admin/*` and `/api/access-status` always stay local. A legacy single `downloadProxy` is migrated into both on first `loadConfig()`.
 - **Upload webhook (config.webhook)** — after `/api/upload/complete` writes to the DB, `services/webhook.js` POSTs `{event, fileId, attachments[].downloadUrl, shareUrl, zipUrl, expiresAt, ...}` to `webhook.url`. Fire-and-forget (never awaited, so a slow/hooked receiver can't stall the response), `AbortSignal.timeout` bounds it, optional `HMAC-SHA256` via `X-Webhook-Signature`. Download links are absolute: `webhook.publicUrl` wins, else the request Host — so they stay correct regardless of which proxy legs are enabled. Validation lives in `routes/admin.js` (enabled ⇒ valid http(s) URL).
+- **Import from an internet URL (upload page)** — an entry may carry `sourceUrl` + `host` instead of bytes. `POST /api/upload/url/resolve` probes the remote (HEAD, falling back to `Range: bytes=0-0` GET) and picks the filename: URL path segment if it looks like a file, else `Content-Disposition` (`filename*` first), else path stem + MIME extension. The client puts the entry in the normal file list (editable name, 托管 checkbox) and `POST /api/upload/init` stores `sourceUrl`/`host` in the manifest; `/api/upload/complete` then either streams the file down (`host: true`, so it still goes through archive/virus checks) or writes a record with `hosted=false`. `file_records` gained `source_url` + `hosted` (added via `ALTER TABLE` in `initDb()` for old DBs; existing rows default to `hosted=true`). On download, a `hosted=false` record 302-redirects to `sourceUrl` instead of serving bytes, and is excluded from zip. **Cleanup must not treat those records as orphans** — `services/cleanup.js` keeps them (and their `files` row) even though no file exists on disk. Note the server-side fetch is an SSRF surface: only `http(s)` is allowed, but internal hosts remain reachable from the server.
 - **HashRouter** (not BrowserRouter) — avoids server-side fallback complexity for SPA routing
 - **DuckDB** (`@duckdb/node-api`) — async API; `server/db.js` exposes Promise-based helpers. Single-writer: only one `DuckDBInstance` per `data.duckdb`. BIGINT/TIMESTAMP columns come back as BigInt/DuckDBTimestampValue and are normalized to `number` (ms) inside `db.js`.
 - **File storage**: each upload gets a folder named by its 8-char ID under `config.storagePath`

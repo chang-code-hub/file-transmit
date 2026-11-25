@@ -122,7 +122,7 @@
   "webhooks": [],
   "webhookPublicUrl": "",
   "webhookTimeoutMs": 10000,
-  "downloadToken": "",
+  "downloadToken": "XvzuVkLDJuu5BbJzLj8R_5pnNv-qgbrr",
   "preferLocalDownload": false,
   "adminPasswordIsGenerated": true
 }

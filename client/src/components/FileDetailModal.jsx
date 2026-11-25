@@ -81,7 +81,8 @@ export default function FileDetailModal({ fileId, onClose }) {
 
             <div style={{ marginTop: 20, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
               <h3 style={{ fontSize: 15, marginBottom: 10 }}>文件列表</h3>
-              {data.files.length > 0 && (
+              {/* 外链跳转项没有本地文件，打不出包，有实体文件时才给打包入口 */}
+              {data.files.some(f => f.hosted !== false) && (
                 <a
                   href={data.zipUrl || `/api/download/${data.id}/zip`}
                   className="btn btn-primary btn-small"
@@ -89,14 +90,16 @@ export default function FileDetailModal({ fileId, onClose }) {
                   rel={data.zipUrl?.startsWith('http') ? 'noopener noreferrer' : undefined}
                   download
                 >
-                  📦 打包下载（{data.files.length} 个文件）
+                  📦 打包下载（{data.files.filter(f => f.hosted !== false).length} 个文件）
                 </a>
               )}
             </div>
 
             <div style={{ marginTop: 10 }}>
               <div style={{ border: '1px solid #eee', borderRadius: 8, overflow: 'hidden' }}>
-                {data.files.map((f, i) => (
+                {data.files.map((f, i) => {
+                  const isRedirect = f.sourceUrl && f.hosted === false;
+                  return (
                   <div
                     key={f.id}
                     style={{
@@ -106,28 +109,58 @@ export default function FileDetailModal({ fileId, onClose }) {
                       padding: '10px 14px',
                       borderBottom: i < data.files.length - 1 ? '1px solid #f0f0f0' : 'none',
                       background: i % 2 === 0 ? '#fafafa' : '#fff',
+                      gap: 10,
                     }}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
                       <span style={{ fontSize: 20 }}>{getFileIcon(f.originalName)}</span>
-                      <span style={{ fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {f.originalName}
-                      </span>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {f.originalName}
+                        </div>
+                        {f.sourceUrl && (
+                          <div style={{ fontSize: 11, color: '#999', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {isRedirect ? '302 跳转到：' : '来源：'}
+                            <a href={f.sourceUrl} target="_blank" rel="noopener noreferrer" style={{ color: '#1a73e8' }}>
+                              {f.sourceUrl}
+                            </a>
+                          </div>
+                        )}
+                      </div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
-                      <span style={{ fontSize: 12, color: '#999' }}>{formatSize(f.size)}</span>
+                      {f.sourceUrl && (
+                        <span
+                          title={isRedirect
+                            ? '未托管：本服务不保存文件，点下载会 302 跳回原始地址'
+                            : '已托管：服务器已下载并保存该文件'}
+                          style={{
+                            fontSize: 11, padding: '2px 6px', borderRadius: 4,
+                            color: isRedirect ? '#b7791f' : '#2f855a',
+                            background: isRedirect ? '#fffaf0' : '#f0fff4',
+                            border: `1px solid ${isRedirect ? '#fbd38d' : '#c6f6d5'}`,
+                          }}
+                        >
+                          {isRedirect ? '跳转' : '托管'}
+                        </span>
+                      )}
+                      <span style={{ fontSize: 12, color: '#999' }}>
+                        {isRedirect && !f.size ? '—' : formatSize(f.size)}
+                      </span>
                       <a
                         href={f.downloadUrl || `/api/download/${data.id}/${encodeURIComponent(f.storedName)}`}
                         className="btn btn-primary btn-small"
                         target={f.downloadUrl?.startsWith('http') ? '_blank' : undefined}
                         rel={f.downloadUrl?.startsWith('http') ? 'noopener noreferrer' : undefined}
-                        download
+                        download={!isRedirect}
+                        title={isRedirect ? '跳转到原始地址下载' : undefined}
                       >
-                        下载
+                        {isRedirect ? '前往下载' : '下载'}
                       </a>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </>

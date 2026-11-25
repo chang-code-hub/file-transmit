@@ -8,6 +8,7 @@ const {
   deleteFileRecordById,
   getAllFiles,
   deleteFileById,
+  isRedirectRecord,
 } = require('../db');
 
 const CLEANUP_INTERVAL = 30 * 60 * 1000; // 30 minutes
@@ -59,8 +60,16 @@ async function runCleanup() {
     const allRecords = await getAllFileRecords();
     const fileMap = new Map(allFiles.map(f => [f.id, f]));
 
+    // 外链跳转条目（未托管的互联网链接）本地本来就没有文件，
+    // 不能按「文件不见了」当孤立记录删掉，否则分享链接会在过期前失效。
+    const redirectFileIds = new Set(
+      allRecords.filter(isRedirectRecord).map((r) => r.file_id)
+    );
+
     let orphanRecords = 0;
     for (const record of allRecords) {
+      if (isRedirectRecord(record)) continue;
+
       const fileEntry = fileMap.get(record.file_id);
       if (!fileEntry) continue; // parent record already gone
 
@@ -79,8 +88,11 @@ async function runCleanup() {
     let removedFiles = 0;
     let removedEmptyDirs = 0;
     for (const file of allFiles) {
+      const keepForRedirect = redirectFileIds.has(file.id);
       const folderExists = fs.existsSync(file.folder_path);
       if (!folderExists) {
+        // 只剩外链跳转条目时没有文件夹也正常，DB 记录要留到过期
+        if (keepForRedirect) continue;
         await deleteFileById(file.id);
         removedFiles++;
         logger.log(`[清理] 删除不存在文件夹的数据库记录: ${file.folder_path}`);
@@ -94,9 +106,11 @@ async function runCleanup() {
           fs.rmdirSync(file.folder_path);
           removedEmptyDirs++;
           logger.log(`[清理] 删除空文件夹: ${file.folder_path}`);
-          // Also remove the DB record since the folder is gone
-          await deleteFileById(file.id);
-          removedFiles++;
+          // Also remove the DB record since the folder is gone（外链跳转条目除外）
+          if (!keepForRedirect) {
+            await deleteFileById(file.id);
+            removedFiles++;
+          }
         }
       } catch (err) {
         logger.error(`[清理] 检查文件夹失败: ${file.folder_path}`, err.message);

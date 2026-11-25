@@ -15,6 +15,7 @@
  */
 const crypto = require('crypto');
 const { getConfig } = require('../config');
+const { isRedirectRecord } = require('../db');
 const logger = require('../utils/logger');
 
 /**
@@ -93,6 +94,9 @@ function buildPayload({ file, records, succeededFiles = [], failedFiles = [], or
     size: Number(r.size) || 0,
     sizeText: formatBytes(r.size),
     mimeType: r.mime_type || '',
+    // 互联网链接导入：hosted=false 表示本服务没存实体文件，downloadUrl 会 302 回 sourceUrl
+    hosted: !isRedirectRecord(r),
+    sourceUrl: r.source_url || '',
     downloadUrl: buildFileDownloadUrl(origin, file.id, r.stored_name),
   }));
 

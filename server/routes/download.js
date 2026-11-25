@@ -3,7 +3,7 @@ const router = express.Router();
 const path = require('path');
 const fs = require('fs');
 const archiver = require('archiver');
-const { getFileById } = require('../db');
+const { getFileById, isRedirectRecord } = require('../db');
 const { isUploadProxyEnabled, isDownloadProxyEnabled } = require('../config');
 const logger = require('../utils/logger');
 const ipFilter = require('../middleware/ipFilter');
@@ -81,6 +81,9 @@ router.get('/:fileId', async (req, res) => {
       storedName: r.stored_name,
       size: r.size,
       mimeType: r.mime_type,
+      // 互联网链接导入：sourceUrl 供前端展示来源；hosted=false 表示下载时 302 跳回原始地址
+      sourceUrl: r.source_url || '',
+      hosted: !isRedirectRecord(r),
       downloadUrl: buildDownloadUrl(file.id, r.stored_name),
     })),
   });
@@ -118,11 +121,14 @@ router.get('/:fileId/zip', async (req, res) => {
     }
   }
 
-  // 去掉已从磁盘删除的文件
+  // 去掉已从磁盘删除的文件（外链跳转条目本来就没有本地文件，天然被排除）
   const existing = records.filter(r => fs.existsSync(path.join(file.folder_path, r.stored_name)));
   if (existing.length === 0) {
+    const onlyRedirect = records.length > 0 && records.every(isRedirectRecord);
     logger.log(`[下载] 打包下载: ID=${fileId} 无可下载文件, IP=${clientIp}`);
-    return res.status(404).json({ error: '文件已被删除' });
+    return res.status(404).json({
+      error: onlyRedirect ? '该文件 ID 下只有外链跳转项，无法打包下载' : '文件已被删除',
+    });
   }
 
   const zipName = `${fileId}.zip`;
@@ -191,6 +197,23 @@ router.get('/:fileId/:fileName', async (req, res) => {
   if (!record) {
     logger.log(`[下载] 下载请求: ID=${fileId}, 文件 "${fileName}" 不存在, IP=${clientIp}`);
     return res.status(404).json({ error: '文件不存在' });
+  }
+
+  // 互联网链接导入且未托管：本地没有实体文件，直接 302 回原始地址。
+  // 浏览器拿到 Location 后自行完成下载，文件名由源站的 Content-Disposition 决定。
+  if (isRedirectRecord(record)) {
+    // 再验一次协议：写入时已挡过，这里兜底防止库里出现 javascript: 之类的东西
+    let ok = false;
+    try {
+      const u = new URL(record.source_url);
+      ok = u.protocol === 'http:' || u.protocol === 'https:';
+    } catch { ok = false; }
+    if (!ok) {
+      logger.log(`[下载] 外链跳转被拒: ID=${fileId}, 非法地址 "${record.source_url}", IP=${clientIp}`);
+      return res.status(400).json({ error: '外链地址无效' });
+    }
+    logger.log(`[下载] 外链跳转: ID=${fileId}, 文件="${record.original_name}" -> ${record.source_url}, IP=${clientIp}`);
+    return res.redirect(302, record.source_url);
   }
 
   const filePath = path.join(file.folder_path, record.stored_name);

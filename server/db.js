@@ -92,6 +92,37 @@ async function get(sql, params) {
   return rows.length > 0 ? rows[0] : null;
 }
 
+/**
+ * 该记录是否为「外链跳转」条目：来自互联网链接且未托管，
+ * 本地磁盘上没有实体文件，下载时应 302 回原始 URL。
+ *
+ * hosted 列对历史数据默认为 true（它们本来就有本地文件），
+ * 因此判定以「有 source_url 且 hosted 不为真」为准。
+ *
+ * @param {object} row file_records 行
+ * @returns {boolean}
+ */
+function isRedirectRecord(row) {
+  if (!row || !row.source_url) return false;
+  const h = row.hosted;
+  return !(h === true || h === 1 || h === 'true');
+}
+
+/**
+ * 确保 file_records 上有指定列。DuckDB 的 CREATE TABLE IF NOT EXISTS
+ * 不会给已存在的表补列，升级时必须走 ALTER。
+ *
+ * @param {string} column 列名（小写比较）
+ * @param {string} ddl    完整的 ALTER 语句
+ */
+async function ensureColumn(column, ddl) {
+  const rows = await all('DESCRIBE file_records');
+  const names = rows.map((r) => String(r.column_name || '').toLowerCase());
+  if (!names.includes(column)) {
+    await run(ddl);
+  }
+}
+
 async function initDb() {
   if (db) return db;
 
@@ -105,6 +136,11 @@ async function initDb() {
   await run('CREATE INDEX IF NOT EXISTS idx_files_user_id ON files(user_id)');
   await run('CREATE INDEX IF NOT EXISTS idx_files_expires_at ON files(expires_at)');
   await run('CREATE INDEX IF NOT EXISTS idx_file_records_file_id ON file_records(file_id)');
+
+  // 互联网链接导入：source_url 记原始地址，hosted=false 表示只存跳转、不落地。
+  // 旧库升级时补列；hosted 默认 true，历史记录都是有本地文件的。
+  await ensureColumn('source_url', 'ALTER TABLE file_records ADD COLUMN source_url VARCHAR');
+  await ensureColumn('hosted', 'ALTER TABLE file_records ADD COLUMN hosted BOOLEAN DEFAULT true');
 
   return db;
 }
@@ -129,10 +165,20 @@ async function createFile({ id, folderPath, description, ip, ua, userId, expires
   return id;
 }
 
-async function addFileRecord({ fileId, originalName, storedName, size, mimeType }) {
+/**
+ * 新增一条文件记录。
+ *
+ * sourceUrl / hosted 用于互联网链接导入：
+ *  - hosted=true  ：服务器已把远端文件下载到本地，sourceUrl 只作溯源
+ *  - hosted=false ：本地没有实体文件，下载时按 sourceUrl 做 302 跳转
+ *
+ * @param {object} p
+ * @param {boolean} [p.hosted] 默认 true（普通上传）
+ */
+async function addFileRecord({ fileId, originalName, storedName, size, mimeType, sourceUrl = '', hosted = true }) {
   await run(
-    "INSERT INTO file_records (id, file_id, original_name, stored_name, size, mime_type) VALUES (nextval('seq_file_records'), ?, ?, ?, ?, ?)",
-    [fileId, originalName, storedName, size || 0, mimeType || '']
+    "INSERT INTO file_records (id, file_id, original_name, stored_name, size, mime_type, source_url, hosted) VALUES (nextval('seq_file_records'), ?, ?, ?, ?, ?, ?, ?)",
+    [fileId, originalName, storedName, size || 0, mimeType || '', sourceUrl || '', hosted !== false]
   );
 }
 
@@ -265,6 +311,7 @@ module.exports = {
   getDb,
   createFile,
   addFileRecord,
+  isRedirectRecord,
   getFileById,
   getFilesByUserId,
   listFiles,

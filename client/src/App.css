@@ -282,3 +282,24 @@ body {
 .app-footer a:hover {
   color: #1a73e8;
 }
+
+/* 无分块可数的进度（如链接条目交给服务器端下载）：用滚动条纹表示进行中 */
+.progress-indeterminate {
+  background-image: linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.35) 25%,
+    transparent 25%,
+    transparent 50%,
+    rgba(255, 255, 255, 0.35) 50%,
+    rgba(255, 255, 255, 0.35) 75%,
+    transparent 75%,
+    transparent
+  );
+  background-size: 16px 16px;
+  animation: progress-stripe 0.8s linear infinite;
+}
+
+@keyframes progress-stripe {
+  from { background-position: 0 0; }
+  to { background-position: 16px 0; }
+}

@@ -12,6 +12,7 @@ const logger = require('../utils/logger');
 
 const { inspectArchives } = require('../services/archiveCheck');
 const { resolvePublicOrigin, buildPayload, sendWebhooks } = require('../services/webhook');
+const { normalizeSourceUrl, sanitizeFileName, resolveRemoteFile, downloadToFile } = require('../services/urlImport');
 const { clientIpOf } = require('../utils/clientIp');
 
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB per chunk
@@ -28,6 +29,34 @@ function generateId() {
     id += chars[bytes[i] % chars.length];
   }
   return id;
+}
+
+/**
+ * 落盘文件名：去掉路径分隔符等危险字符，避免 ../ 穿出上传目录。
+ * @param {string} name
+ * @returns {string} 保证非空
+ */
+function diskSafeName(name) {
+  return sanitizeFileName(name) || 'file';
+}
+
+/**
+ * 生成不与已用名冲突的文件名：a.txt -> a (1).txt -> a (2).txt
+ * @param {string} desired 用户/清单里的名字
+ * @param {string[]} taken 已占用的 storedName 列表
+ */
+function uniqueStoredName(desired, taken) {
+  const base = diskSafeName(desired);
+  const dotIdx = base.lastIndexOf('.');
+  const stem = dotIdx > 0 ? base.slice(0, dotIdx) : base;
+  const ext = dotIdx > 0 ? base.slice(dotIdx) : '';
+  let name = base;
+  let counter = 1;
+  while (taken.includes(name)) {
+    name = `${stem} (${counter})${ext}`;
+    counter++;
+  }
+  return name;
 }
 
 // Check if file extension is allowed
@@ -70,9 +99,40 @@ const chunkUpload = multer({
 });
 
 /**
+ * POST /api/upload/url/resolve
+ * 探测一个互联网链接，把文件名 / 大小 / MIME 解析出来给前端回填。
+ * Body: { url }
+ *
+ * 只读响应头、不下载正文，所以失败也很快；前端拿不到时仍可用 URL 自己猜个名字。
+ */
+router.post('/url/resolve', async (req, res) => {
+  const clientIp = clientIpOf(req);
+  try {
+    const rawUrl = req.body && req.body.url;
+    let info;
+    try {
+      info = await resolveRemoteFile(rawUrl);
+    } catch (err) {
+      logger.log(`[链接导入] 解析失败: "${String(rawUrl || '').slice(0, 200)}" ${err.message}, IP=${clientIp}`);
+      return res.status(400).json({ error: err.message });
+    }
+
+    const allowed = isExtensionAllowed(info.fileName);
+    logger.log(
+      `[链接导入] 解析成功: 文件名="${info.fileName}", 大小=${info.size || '未知'}, ` +
+      `类型=${allowed ? '允许' : '不在白名单'}, IP=${clientIp}`
+    );
+    res.json({ ...info, extensionAllowed: allowed });
+  } catch (err) {
+    logger.error(`[链接导入] 解析异常: ${err.message}`);
+    res.status(500).json({ error: '解析链接失败: ' + err.message });
+  }
+});
+
+/**
  * POST /api/upload/init
  * Initialize an upload session. Creates fileId folder and returns uploadId.
- * Body: { files: [{name, size, mimeType}], description }
+ * Body: { files: [{name, size, mimeType, sourceUrl?, host?}], description }
  */
 router.post('/init', (req, res) => {
   try {
@@ -84,13 +144,40 @@ router.post('/init', (req, res) => {
       return res.status(400).json({ error: '请选择要上传的文件' });
     }
 
-    // Validate extensions
+    // Validate extensions + 互联网链接条目
     for (const f of files) {
+      if (!f || typeof f.name !== 'string' || !f.name.trim()) {
+        logger.log('[上传] 初始化被拒绝: 存在没有文件名的条目');
+        return res.status(400).json({ error: '存在没有文件名的条目' });
+      }
       if (!isExtensionAllowed(f.name)) {
         logger.log(`[上传] 初始化被拒绝: 不允许的文件类型 "${f.name}", IP=${clientIp}`);
         return res.status(400).json({ error: `不允许的文件类型: ${path.extname(f.name)}` });
       }
+      if (f.sourceUrl) {
+        try {
+          normalizeSourceUrl(f.sourceUrl);
+        } catch (err) {
+          logger.log(`[上传] 初始化被拒绝: 链接无效 "${String(f.sourceUrl).slice(0, 200)}" (${err.message}), IP=${clientIp}`);
+          return res.status(400).json({ error: `链接无效：${err.message}` });
+        }
+      }
     }
+
+    // 归一化清单条目：链接条目额外记下 sourceUrl 与是否托管
+    const manifestFiles = files.map((f) => {
+      const entry = {
+        name: String(f.name).trim(),
+        size: Number(f.size) || 0,
+        mimeType: String(f.mimeType || ''),
+      };
+      if (f.sourceUrl) {
+        entry.sourceUrl = String(f.sourceUrl).trim();
+        // 只有显式传 false 才算「不托管」，缺省一律托管（有实体文件才好做归档/病毒检查）
+        entry.host = f.host !== false;
+      }
+      return entry;
+    });
 
     // Generate fileId and ensure unique folder
     let fileId;
@@ -111,7 +198,7 @@ router.post('/init', (req, res) => {
     const manifest = {
       fileId,
       description: description || '',
-      files,
+      files: manifestFiles,
       createdAt: Date.now(),
       status: 'uploading',
     };
@@ -121,8 +208,12 @@ router.post('/init', (req, res) => {
       'utf-8'
     );
 
-    const totalSize = files.reduce((sum, f) => sum + (f.size || 0), 0);
-    logger.log(`[上传] 初始化成功: ID=${fileId}, 文件数=${files.length}, 总大小=${(totalSize / 1024 / 1024).toFixed(1)}MB, IP=${clientIp}`);
+    const totalSize = manifestFiles.reduce((sum, f) => sum + (f.size || 0), 0);
+    const urlCount = manifestFiles.filter((f) => f.sourceUrl).length;
+    logger.log(
+      `[上传] 初始化成功: ID=${fileId}, 文件数=${manifestFiles.length}` +
+      `${urlCount ? `（含 ${urlCount} 个链接条目）` : ''}, 总大小=${(totalSize / 1024 / 1024).toFixed(1)}MB, IP=${clientIp}`
+    );
 
     res.json({
       fileId,
@@ -241,6 +332,7 @@ async function notifyWebhook({ fileId, succeededFiles, failedFiles, req }) {
 router.post('/complete', async (req, res) => {
   try {
     const { fileId } = req.body;
+    const clientIp = clientIpOf(req);
     if (!fileId) {
       logger.log('[上传] 完成请求缺少 fileId');
       return res.status(400).json({ error: '缺少 fileId' });
@@ -265,10 +357,60 @@ router.post('/complete', async (req, res) => {
 
     // Reassemble each file from chunks
     // 跳过不完整的文件（部分分块可能因为客户端网络问题未到达）
+    // 链接条目（sourceUrl）不走分块：托管的由服务器现取，不托管的只写跳转记录。
     const assembledFiles = [];
     const skippedFiles = [];
+    const takenNames = [];
     for (let fi = 0; fi < manifest.files.length; fi++) {
       const fileInfo = manifest.files[fi];
+
+      // --- 互联网链接导入 ---
+      if (fileInfo.sourceUrl) {
+        const storedName = uniqueStoredName(fileInfo.name, takenNames);
+        const originalName = diskSafeName(fileInfo.name);
+        const finalPath = path.join(folderPath, storedName);
+
+        if (fileInfo.host === false) {
+          // 不托管：本地不落任何字节，下载时 302 回原始链接。
+          // size 记 0 —— 这一列全系统都当「实际落地的字节数」用（统计、webhook 合计），
+          // 远端大小只在添加时给用户看，不写进库。
+          takenNames.push(storedName);
+          assembledFiles.push({
+            originalName,
+            storedName,
+            size: 0,
+            mimeType: fileInfo.mimeType || '',
+            sourceUrl: fileInfo.sourceUrl,
+            hosted: false,
+          });
+          logger.log(`[上传] 链接条目(跳转): ID=${fileId}, 文件="${originalName}" -> ${fileInfo.sourceUrl}`);
+          continue;
+        }
+
+        // 托管：服务器下载到本地，之后照常走归档检查 / 病毒检测
+        try {
+          const dl = await downloadToFile(fileInfo.sourceUrl, finalPath);
+          takenNames.push(storedName);
+          assembledFiles.push({
+            originalName,
+            storedName,
+            size: dl.size,
+            mimeType: dl.mimeType || fileInfo.mimeType || '',
+            sourceUrl: fileInfo.sourceUrl,
+            hosted: true,
+          });
+          logger.log(
+            `[上传] 链接条目(托管): ID=${fileId}, 文件="${originalName}", ` +
+            `大小=${(dl.size / 1024 / 1024).toFixed(1)}MB, IP=${clientIp}`
+          );
+        } catch (err) {
+          logger.error(`[上传] 链接下载失败: ID=${fileId}, 文件="${fileInfo.name}", URL=${fileInfo.sourceUrl}, ${err.message}`);
+          try { fs.rmSync(finalPath, { force: true }); } catch {}
+          skippedFiles.push({ name: fileInfo.name, reason: `链接下载失败: ${err.message}` });
+        }
+        continue;
+      }
+
       const totalChunks = Math.ceil(fileInfo.size / CHUNK_SIZE);
 
       // Verify all chunks received
@@ -291,18 +433,9 @@ router.post('/complete', async (req, res) => {
       }
       if (!allChunksExist) continue;
 
-      // Handle duplicate filenames
-      let storedName = fileInfo.name;
-      let counter = 1;
-      while (assembledFiles.some(f => f.storedName === storedName)) {
-        const dotIdx = fileInfo.name.lastIndexOf('.');
-        if (dotIdx > 0) {
-          storedName = fileInfo.name.slice(0, dotIdx) + ` (${counter})` + fileInfo.name.slice(dotIdx);
-        } else {
-          storedName = fileInfo.name + ` (${counter})`;
-        }
-        counter++;
-      }
+      // Handle duplicate filenames（顺带把路径分隔符等危险字符挡在磁盘之外）
+      const storedName = uniqueStoredName(fileInfo.name, takenNames);
+      takenNames.push(storedName);
 
       // Write chunks sequentially into final file
       const finalPath = path.join(folderPath, storedName);
@@ -328,11 +461,11 @@ router.post('/complete', async (req, res) => {
       });
     }
 
-    // 如果没有一个文件组装成功，返回错误
+    // 如果没有一个文件落地成功，返回错误
     if (assembledFiles.length === 0) {
-      logger.log(`[上传] 完成失败: ID=${fileId}, 所有文件分块均不完整`);
+      logger.log(`[上传] 完成失败: ID=${fileId}, 所有文件均未成功（分块不完整或链接下载失败）`);
       try { fs.rmSync(folderPath, { recursive: true }); } catch {}
-      return res.status(400).json({ error: '所有文件上传均不完整，请重试' });
+      return res.status(400).json({ error: skippedFiles[0]?.reason || '所有文件上传均不完整，请重试' });
     }
 
     // --- 压缩包检查（含病毒检测） ---
@@ -385,7 +518,6 @@ router.post('/complete', async (req, res) => {
     // Create DB records
     const retentionHours = config.retentionHours || 24;
     const expiresAt = Date.now() + retentionHours * 60 * 60 * 1000;
-    const clientIp = clientIpOf(req);
     const ip = clientIp;
 
     await createFile({
@@ -405,6 +537,8 @@ router.post('/complete', async (req, res) => {
         storedName: f.storedName,
         size: f.size,
         mimeType: f.mimeType,
+        sourceUrl: f.sourceUrl || '',
+        hosted: f.hosted !== false,
       });
     }
 
@@ -419,16 +553,24 @@ router.post('/complete', async (req, res) => {
 
     const totalSize = assembledFiles.reduce((sum, f) => sum + f.size, 0);
     const skippedInfo = skippedFiles.length > 0
-      ? `，${skippedFiles.length} 个文件因分块缺失被跳过`
+      ? `，${skippedFiles.length} 个文件被跳过（分块缺失或链接下载失败）`
       : '';
-    logger.log(`[上传] 完成: ID=${fileId}, 文件数=${assembledFiles.length}${skippedInfo}, 总大小=${(totalSize / 1024 / 1024).toFixed(1)}MB, IP=${ip}, 保留至=${new Date(expiresAt).toLocaleString()}`);
+    const redirectCount = assembledFiles.filter(f => f.hosted === false).length;
+    logger.log(`[上传] 完成: ID=${fileId}, 文件数=${assembledFiles.length}${skippedInfo}${redirectCount ? `，其中 ${redirectCount} 个为外链跳转` : ''}, 总大小=${(totalSize / 1024 / 1024).toFixed(1)}MB, IP=${ip}, 保留至=${new Date(expiresAt).toLocaleString()}`);
+
+    const succeededPayload = assembledFiles.map(f => ({
+      name: f.originalName,
+      size: f.size,
+      sourceUrl: f.sourceUrl || '',
+      hosted: f.hosted !== false,
+    }));
 
     res.json({
       success: true,
       fileId,
       fileCount: assembledFiles.length,
       totalCount: manifest.files.length,
-      succeededFiles: assembledFiles.map(f => ({ name: f.originalName, size: f.size })),
+      succeededFiles: succeededPayload,
       failedFiles: skippedFiles.length > 0 ? skippedFiles : [],
       expiresAt,
       message: skippedFiles.length > 0
@@ -441,7 +583,7 @@ router.post('/complete', async (req, res) => {
     // 必须放在 res.json 之后、且不 await —— 回调慢/挂掉都不能拖住上传响应。
     notifyWebhook({
       fileId,
-      succeededFiles: assembledFiles.map(f => ({ name: f.originalName, size: f.size })),
+      succeededFiles: succeededPayload,
       failedFiles: skippedFiles.length > 0 ? skippedFiles : [],
       req,
     });
@@ -464,6 +606,8 @@ router.get('/history', async (req, res) => {
       originalName: r.original_name,
       size: r.size,
       mimeType: r.mime_type,
+      sourceUrl: r.source_url || '',
+      hosted: r.hosted !== false,
     })),
   })));
 });

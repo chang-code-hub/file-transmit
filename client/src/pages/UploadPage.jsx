@@ -2,6 +2,7 @@ import { useState, useRef, useCallback } from 'react';
 import HistoryButton, { addToHistory } from '../components/HistoryButton';
 import FileDetailModal from '../components/FileDetailModal';
 import TextFileModal from '../components/TextFileModal';
+import UrlFileModal from '../components/UrlFileModal';
 
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB, must match server
 
@@ -16,6 +17,7 @@ export default function UploadPage() {
   const [copied, setCopied] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
   const [textModal, setTextModal] = useState(null); // null | { index?: number, name, content }
+  const [urlModal, setUrlModal] = useState(false);
 
   // Progress state
   const [fileProgress, setFileProgress] = useState([]);
@@ -106,6 +108,42 @@ export default function UploadPage() {
     setError('');
   }, []);
 
+  /** 重名时补 (1)、(2)…，与服务端 uniqueStoredName 保持一致的观感 */
+  const dedupeName = useCallback((list, desired) => {
+    let name = desired;
+    let counter = 1;
+    while (list.some(existing => existing.displayName === name)) {
+      const dotIdx = desired.lastIndexOf('.');
+      name = dotIdx > 0
+        ? desired.slice(0, dotIdx) + ` (${counter})` + desired.slice(dotIdx)
+        : desired + ` (${counter})`;
+      counter++;
+    }
+    return name;
+  }, []);
+
+  /** 从 URL 添加的条目进入待上传列表 */
+  const handleAddUrlItem = useCallback(({ sourceUrl, fileName, host, size, mimeType }) => {
+    setFiles(prev => {
+      const name = dedupeName(prev, fileName);
+      return [...prev, {
+        isUrl: true,
+        sourceUrl,
+        host: !!host,
+        size: Number(size) || 0,
+        mimeType: mimeType || '',
+        displayName: name,
+        file: null,
+      }];
+    });
+    setError('');
+  }, [dedupeName]);
+
+  /** 列表里直接改链接条目的文件名 */
+  const handleRenameUrlItem = (index, name) => {
+    setFiles(prev => prev.map((item, i) => (i === index ? { ...item, displayName: name } : item)));
+  };
+
   const handleRemove = (index) => {
     setFiles(prev => prev.filter((_, i) => i !== index));
   };
@@ -169,6 +207,13 @@ export default function UploadPage() {
       return;
     }
 
+    // 链接条目的文件名是可编辑输入框，可能被清空
+    const emptyName = files.find(f => !String(f.displayName || '').trim());
+    if (emptyName) {
+      setError('文件名不能为空，请为每个条目填写文件名');
+      return;
+    }
+
     setUploading(true);
     setError('');
     setResult(null);
@@ -177,14 +222,19 @@ export default function UploadPage() {
 
     const fileList = files.map(f => ({
       name: f.displayName,
-      size: f.file.size,
-      mimeType: f.file.type || '',
+      // 链接条目没有本地 File 对象：大小来自探测结果（可能为 0 = 未知）
+      size: f.isUrl ? (f.size || 0) : f.file.size,
+      mimeType: f.isUrl ? (f.mimeType || '') : (f.file.type || ''),
+      // 服务端据此区分「托管下载」与「只存链接、下载时 302」
+      ...(f.isUrl ? { sourceUrl: f.sourceUrl, host: !!f.host } : {}),
     }));
 
     // Initialize file progress tracking
-    const fp = fileList.map((f, i) => ({
+    const fp = fileList.map((f) => ({
       name: f.name,
-      chunks: Math.ceil(f.size / CHUNK_SIZE),
+      isUrl: !!f.sourceUrl,
+      host: f.host !== false,
+      chunks: f.sourceUrl ? 0 : Math.ceil(f.size / CHUNK_SIZE),
       uploaded: 0,
       status: 'waiting', // waiting | uploading | verifying | done | error
     }));
@@ -209,15 +259,23 @@ export default function UploadPage() {
 
       const initData = await initRes.json();
       fileId = initData.fileId;
-      const totalChunksOverall = fileList.reduce((sum, f) => sum + Math.ceil(f.size / CHUNK_SIZE), 0);
+      const totalChunksOverall = fileList.reduce((sum, f) => sum + (f.sourceUrl ? 0 : Math.ceil(f.size / CHUNK_SIZE)), 0);
       let completedChunksTotal = 0;
       let successCount = 0;
+      let urlCount = 0;
       let errorCount = 0;
 
       // Step 2: Upload each file sequentially, chunk by chunk
       // 单个文件失败不影响后续文件继续上传
       for (let fi = 0; fi < files.length; fi++) {
         const f = files[fi];
+
+        // 链接条目不传分块：托管的由服务器在 complete 阶段下载，不托管的只写跳转记录
+        if (f.isUrl) {
+          urlCount++;
+          continue;
+        }
+
         const totalChunks = Math.ceil(f.file.size / CHUNK_SIZE);
 
         // Mark file as uploading
@@ -236,7 +294,9 @@ export default function UploadPage() {
 
             // Update progress
             completedChunksTotal++;
-            const pct = Math.round((completedChunksTotal / totalChunksOverall) * 1000) / 10;
+            const pct = totalChunksOverall > 0
+              ? Math.round((completedChunksTotal / totalChunksOverall) * 1000) / 10
+              : 100;
             setFileProgress(prev => prev.map((p, i) =>
               i === fi ? { ...p, uploaded: ci + 1 } : p
             ));
@@ -263,9 +323,14 @@ export default function UploadPage() {
         }
       }
 
-      // 如果一个成功的文件都没有，报错
-      if (successCount === 0) {
+      // 如果既没有本地文件传上去、也没有链接条目，报错
+      if (successCount === 0 && urlCount === 0) {
         throw new Error(firstErrorMsg || '所有文件上传失败');
+      }
+
+      // 链接条目交给 complete 阶段处理（服务器下载 / 写跳转记录），先标成"处理中"
+      if (urlCount > 0) {
+        setFileProgress(prev => prev.map(p => (p.isUrl ? { ...p, status: 'verifying' } : p)));
       }
 
       // Step 3: Complete upload — reassemble on server
@@ -310,6 +375,9 @@ export default function UploadPage() {
     }
   };
 
+  // 链接条目交给服务器处理时没有可数的分块，总进度改用滚动条纹
+  const serverPending = uploading && fileProgress.some(p => p.isUrl && p.status === 'verifying');
+
   const formatSize = (bytes) => {
     if (!bytes) return '0 B';
     const units = ['B', 'KB', 'MB', 'GB'];
@@ -348,7 +416,22 @@ export default function UploadPage() {
               }}>
                 <span style={{ color: '#48bb78' }}>✅</span>
                 <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
-                <span style={{ color: '#999', fontSize: 11, flexShrink: 0 }}>{formatSize(f.size)}</span>
+                {f.sourceUrl && (
+                  <span
+                    title={f.hosted ? `已托管，源地址：${f.sourceUrl}` : `下载时 302 跳转到：${f.sourceUrl}`}
+                    style={{
+                      fontSize: 11, flexShrink: 0, padding: '1px 5px', borderRadius: 4,
+                      color: f.hosted === false ? '#b7791f' : '#2f855a',
+                      background: f.hosted === false ? '#fffaf0' : '#f0fff4',
+                      border: `1px solid ${f.hosted === false ? '#fbd38d' : '#c6f6d5'}`,
+                    }}
+                  >
+                    {f.hosted === false ? '跳转' : '托管'}
+                  </span>
+                )}
+                <span style={{ color: '#999', fontSize: 11, flexShrink: 0 }}>
+                  {f.hosted === false && !f.size ? '—' : formatSize(f.size)}
+                </span>
               </div>
             ))}
             {(result.failedFiles || []).map((f, i) => (
@@ -461,13 +544,20 @@ export default function UploadPage() {
               <div style={{ fontSize: 40, marginBottom: 10 }}>📁</div>
               <div style={{ fontSize: 15, color: '#666' }}>拖拽文件到此处上传</div>
               <div style={{ fontSize: 13, color: '#999', marginTop: 4 }}>或点击选择文件（支持多选）</div>
-              <div style={{ marginTop: 14 }}>
+              <div style={{ marginTop: 14, display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
                 <button
                   type="button"
                   className="btn btn-secondary btn-small"
                   onClick={(e) => { e.stopPropagation(); setTextModal({ name: nextTextName(), content: '' }); }}
                 >
                   📝 新建文本文件
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-small"
+                  onClick={(e) => { e.stopPropagation(); setUrlModal(true); }}
+                >
+                  🔗 从 URL 添加
                 </button>
               </div>
               <input
@@ -487,44 +577,91 @@ export default function UploadPage() {
                 已选择 {files.length} 个文件
               </h3>
               <div style={{ border: '1px solid #eee', borderRadius: 8, overflow: 'hidden' }}>
-                {files.map(({ file, displayName, isText }, i) => (
-                  <div
-                    key={i}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      padding: '8px 12px',
-                      borderBottom: i < files.length - 1 ? '1px solid #f0f0f0' : 'none',
-                      fontSize: 13,
-                    }}
-                  >
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-                      {isText ? '📝' : '📎'} {displayName}
-                      {!isText && displayName !== file.name && (
-                        <span style={{ color: '#999', fontSize: 11, marginLeft: 6 }}>
-                          (原名: {file.name})
+                {files.map((item, i) => {
+                  const { displayName, isText, isUrl, file, sourceUrl, host } = item;
+                  return (
+                    <div
+                      key={i}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '8px 12px',
+                        borderBottom: i < files.length - 1 ? '1px solid #f0f0f0' : 'none',
+                        fontSize: 13,
+                        gap: 8,
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}>
+                        <span style={{ flexShrink: 0 }}>
+                          {isUrl ? '🌐' : isText ? '📝' : '📎'}
+                        </span>
+                        {isUrl ? (
+                          <input
+                            type="text"
+                            value={displayName}
+                            onChange={e => handleRenameUrlItem(i, e.target.value)}
+                            title={`${sourceUrl}（可直接改名）`}
+                            style={{
+                              flex: 1,
+                              minWidth: 0,
+                              padding: '4px 8px',
+                              border: '1px solid #e2e8f0',
+                              borderRadius: 4,
+                              fontSize: 13,
+                            }}
+                          />
+                        ) : (
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                            {displayName}
+                            {!isText && file && displayName !== file.name && (
+                              <span style={{ color: '#999', fontSize: 11, marginLeft: 6 }}>
+                                (原名: {file.name})
+                              </span>
+                            )}
+                          </span>
+                        )}
+                      </div>
+
+                      {isUrl && (
+                        <span
+                          title={host
+                            ? '托管：上传时由服务器下载并保存该文件'
+                            : '跳转：不保存文件，下载时 302 跳回原始地址'}
+                          style={{
+                            fontSize: 11,
+                            padding: '2px 6px',
+                            borderRadius: 4,
+                            flexShrink: 0,
+                            color: host ? '#2f855a' : '#b7791f',
+                            background: host ? '#f0fff4' : '#fffaf0',
+                            border: `1px solid ${host ? '#c6f6d5' : '#fbd38d'}`,
+                          }}
+                        >
+                          {host ? '托管' : '跳转'}
                         </span>
                       )}
-                    </span>
-                    <span style={{ color: '#999', margin: '0 12px', flexShrink: 0 }}>{formatSize(file.size)}</span>
-                    {isText && (
+
+                      <span style={{ color: '#999', flexShrink: 0 }}>
+                        {isUrl ? (item.size > 0 ? formatSize(item.size) : '—') : formatSize(file?.size)}
+                      </span>
+                      {isText && (
+                        <button
+                          className="btn btn-small btn-secondary"
+                          onClick={(e) => { e.stopPropagation(); handleEditTextFile(i); }}
+                        >
+                          编辑
+                        </button>
+                      )}
                       <button
-                        className="btn btn-small btn-secondary"
-                        style={{ marginRight: 8 }}
-                        onClick={(e) => { e.stopPropagation(); handleEditTextFile(i); }}
+                        className="btn btn-small btn-danger"
+                        onClick={(e) => { e.stopPropagation(); handleRemove(i); }}
                       >
-                        编辑
+                        移除
                       </button>
-                    )}
-                    <button
-                      className="btn btn-small btn-danger"
-                      onClick={(e) => { e.stopPropagation(); handleRemove(i); }}
-                    >
-                      移除
-                    </button>
-                  </div>
-                ))}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -536,12 +673,15 @@ export default function UploadPage() {
               <div style={{ marginBottom: 16 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                   <span style={{ fontSize: 14, fontWeight: 600 }}>总进度</span>
-                  <span style={{ fontSize: 14, color: '#1a73e8' }}>{overallProgress}%</span>
+                  <span style={{ fontSize: 14, color: '#1a73e8' }}>
+                    {serverPending ? '服务器处理中…' : `${overallProgress}%`}
+                  </span>
                 </div>
                 <div style={{ background: '#eee', borderRadius: 6, height: 8, overflow: 'hidden' }}>
                   <div
+                    className={serverPending ? 'progress-indeterminate' : undefined}
                     style={{
-                      width: `${overallProgress}%`,
+                      width: `${serverPending ? 100 : overallProgress}%`,
                       height: '100%',
                       background: 'linear-gradient(90deg, #1a73e8, #4285f4)',
                       borderRadius: 6,
@@ -566,8 +706,15 @@ export default function UploadPage() {
                 const statusText = fp.status === 'waiting' ? '等待中' :
                                    isDone ? '完成' :
                                    isError ? '失败' :
-                                   isVerifying ? '检测中...' :
-                                   `${fp.chunks > 0 ? Math.round(fp.uploaded / fp.chunks * 100) : 0}%`;
+                                   isVerifying
+                                     ? (fp.isUrl ? (fp.host ? '服务器下载中…' : '生成跳转记录…') : '检测中...')
+                                     : `${fp.chunks > 0 ? Math.round(fp.uploaded / fp.chunks * 100) : 0}%`;
+
+                // 链接条目没有分块可数：进行中用滚动条纹，其余按实际进度
+                const barWidth = fp.chunks > 0
+                  ? (fp.uploaded / fp.chunks * 100)
+                  : (isVerifying ? 100 : 0);
+                const indeterminate = fp.isUrl && fp.chunks === 0 && isVerifying;
 
                 return (
                   <div
@@ -592,8 +739,9 @@ export default function UploadPage() {
                     {fp.status !== 'waiting' && (
                       <div style={{ background: '#eee', borderRadius: 4, height: 4, overflow: 'hidden' }}>
                         <div
+                          className={indeterminate ? 'progress-indeterminate' : undefined}
                           style={{
-                            width: `${fp.chunks > 0 ? (fp.uploaded / fp.chunks * 100) : 0}%`,
+                            width: `${barWidth}%`,
                             height: '100%',
                             background: barColor,
                             borderRadius: 4,
@@ -638,6 +786,13 @@ export default function UploadPage() {
               >
                 📝 新建文本文件
               </button>
+              <button
+                className="btn btn-secondary"
+                style={{ width: '100%', padding: '10px', marginTop: 10, fontSize: 14 }}
+                onClick={() => setUrlModal(true)}
+              >
+                🔗 从 URL 添加
+              </button>
             </>
           )}
         </>
@@ -657,6 +812,13 @@ export default function UploadPage() {
           initialContent={textModal.content || ''}
           onSave={textModal.index == null ? handleAddTextFile : handleUpdateTextFile}
           onClose={() => setTextModal(null)}
+        />
+      )}
+
+      {urlModal && (
+        <UrlFileModal
+          onSave={handleAddUrlItem}
+          onClose={() => setUrlModal(false)}
         />
       )}
     </div>
