@@ -1,8 +1,8 @@
 {
   "port": 3000,
-  "adminPassword": "admin123",
   "storagePath": "files",
   "retentionHours": 24,
+  "adminPassword": "admin123",
   "allowedFileTypes": {
     "documents": [
       ".pdf",
@@ -13,11 +13,7 @@
       ".ppt",
       ".pptx",
       ".txt",
-      ".csv",
-      ".rtf",
-      ".odt",
-      ".ods",
-      ".odp"
+      ".csv"
     ],
     "images": [
       ".jpg",
@@ -26,88 +22,51 @@
       ".gif",
       ".bmp",
       ".svg",
-      ".webp",
-      ".ico",
-      ".tiff",
-      ".tif"
+      ".webp"
     ],
     "archives": [
       ".zip",
       ".rar",
       ".7z",
       ".tar",
-      ".gz",
-      ".bz2",
-      ".xz",
-      ".iso"
+      ".gz"
     ],
     "videos": [
       ".mp4",
       ".avi",
+      ".mkv",
       ".mov",
-      ".wmv",
-      ".flv",
-      ".webm",
-      ".m4v",
-      ".mkv"
+      ".wmv"
     ],
     "audio": [
       ".mp3",
       ".wav",
       ".flac",
       ".aac",
-      ".ogg",
-      ".wma",
-      ".m4a"
+      ".ogg"
     ],
     "code": [
       ".js",
       ".ts",
-      ".jsx",
-      ".tsx",
       ".py",
       ".java",
       ".c",
       ".cpp",
-      ".h",
-      ".cs",
-      ".go",
-      ".rs",
-      ".rb",
-      ".php",
       ".html",
       ".css",
       ".json",
-      ".xml",
-      ".yaml",
-      ".yml",
-      ".sql",
-      ".sh",
-      ".bat",
-      ".ps1"
+      ".xml"
     ],
     "custom": []
   },
   "blockEncryptedArchives": true,
-  "detectArchiveByContent": true,
-  "recursiveArchiveCheck": true,
-  "ipFilter": {
-    "upload": {
-      "enabled": false,
-      "mode": "deny",
-      "list": []
-    },
-    "download": {
-      "enabled": false,
-      "mode": "allow",
-      "list": [
-        "10.170.0.0/16"
-      ]
-    }
-  },
-  "sevenZipPath": "C:\\Program Files\\7-Zip\\7z.exe",
-  "enableVirusDetect": true,
-  "virusDetectWaitSeconds": 30,
+  "detectArchiveByContent": false,
+  "recursiveArchiveCheck": false,
+  "sevenZipPath": "",
+  "unrarPath": "",
+  "trustProxy": false,
+  "enableVirusDetect": false,
+  "clamscanPath": "",
   "downloadProxy": {
     "enabled": false,
     "baseUrl": ""
@@ -116,13 +75,22 @@
     "enabled": false,
     "baseUrl": ""
   },
-  "unrarPath": "",
-  "trustProxy": false,
-  "clamscanPath": "",
+  "preferLocalDownload": false,
+  "ipFilter": {
+    "upload": {
+      "enabled": false,
+      "mode": "allow",
+      "list": []
+    },
+    "download": {
+      "enabled": false,
+      "mode": "allow",
+      "list": []
+    }
+  },
   "webhooks": [],
   "webhookPublicUrl": "",
   "webhookTimeoutMs": 10000,
-  "downloadToken": "XvzuVkLDJuu5BbJzLj8R_5pnNv-qgbrr",
-  "preferLocalDownload": false,
+  "downloadToken": "_apIyrXnk-__B9qvNkpyxPj8v-Mk5g0t",
   "adminPasswordIsGenerated": true
 }

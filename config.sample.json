@@ -1,0 +1,128 @@
+{
+  "port": 3000,
+  "adminPassword": "admin123",
+  "storagePath": "files",
+  "retentionHours": 24,
+  "allowedFileTypes": {
+    "documents": [
+      ".pdf",
+      ".doc",
+      ".docx",
+      ".xls",
+      ".xlsx",
+      ".ppt",
+      ".pptx",
+      ".txt",
+      ".csv",
+      ".rtf",
+      ".odt",
+      ".ods",
+      ".odp"
+    ],
+    "images": [
+      ".jpg",
+      ".jpeg",
+      ".png",
+      ".gif",
+      ".bmp",
+      ".svg",
+      ".webp",
+      ".ico",
+      ".tiff",
+      ".tif"
+    ],
+    "archives": [
+      ".zip",
+      ".rar",
+      ".7z",
+      ".tar",
+      ".gz",
+      ".bz2",
+      ".xz",
+      ".iso"
+    ],
+    "videos": [
+      ".mp4",
+      ".avi",
+      ".mov",
+      ".wmv",
+      ".flv",
+      ".webm",
+      ".m4v",
+      ".mkv"
+    ],
+    "audio": [
+      ".mp3",
+      ".wav",
+      ".flac",
+      ".aac",
+      ".ogg",
+      ".wma",
+      ".m4a"
+    ],
+    "code": [
+      ".js",
+      ".ts",
+      ".jsx",
+      ".tsx",
+      ".py",
+      ".java",
+      ".c",
+      ".cpp",
+      ".h",
+      ".cs",
+      ".go",
+      ".rs",
+      ".rb",
+      ".php",
+      ".html",
+      ".css",
+      ".json",
+      ".xml",
+      ".yaml",
+      ".yml",
+      ".sql",
+      ".sh",
+      ".bat",
+      ".ps1"
+    ],
+    "custom": []
+  },
+  "blockEncryptedArchives": true,
+  "detectArchiveByContent": true,
+  "recursiveArchiveCheck": true,
+  "ipFilter": {
+    "upload": {
+      "enabled": false,
+      "mode": "deny",
+      "list": []
+    },
+    "download": {
+      "enabled": false,
+      "mode": "allow",
+      "list": [
+        "10.170.0.0/16"
+      ]
+    }
+  },
+  "sevenZipPath": "C:\\Program Files\\7-Zip\\7z.exe",
+  "enableVirusDetect": true,
+  "virusDetectWaitSeconds": 30,
+  "downloadProxy": {
+    "enabled": false,
+    "baseUrl": ""
+  },
+  "uploadProxy": {
+    "enabled": false,
+    "baseUrl": ""
+  },
+  "unrarPath": "",
+  "trustProxy": false,
+  "clamscanPath": "",
+  "webhooks": [],
+  "webhookPublicUrl": "",
+  "webhookTimeoutMs": 10000,
+  "downloadToken": "XvzuVkLDJuu5BbJzLj8R_5pnNv-qgbrr",
+  "preferLocalDownload": false,
+  "adminPasswordIsGenerated": true
+}
